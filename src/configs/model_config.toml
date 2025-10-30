@@ -1,0 +1,78 @@
+# model_config.toml
+
+[[models]]
+name = "Llama3"
+provider = "ollama"
+model_id = "llama3.1:8b"
+temperature = 0.3
+
+[[models]]
+name = "phi3" 
+provider = "ollama"
+model_id = "phi3:3.8b"
+temperature = 0.2
+
+# Qwen models
+[[models]]
+name = "Qwen2_5-7b"   
+provider = "ollama"
+model_id = "qwen2.5:7b"
+temperature = 0.1
+
+[[models]]
+name = "Qwen2_5-14b"   
+provider = "ollama"
+model_id = "qwen2.5:14b"
+temperature = 0.1
+
+
+[[models]]
+name = "DeepSeek-R1-8B"   
+provider = "ollama"
+model_id = "deepseek-r1:8b"
+temperature = 0.1
+
+
+[[models]]
+name = "DeepSeek-R1-14B"   
+provider = "ollama"
+model_id = "deepseek-r1:14b"
+temperature = 0.1
+
+
+[[models]]
+name = "phi4-mini_3_8B"   
+provider = "ollama"
+model_id = "phi4-mini:3.8b"
+temperature = 0.1
+
+[[models]]
+name = "phi4_14B"   
+provider = "ollama"
+model_id = "phi4:14b"
+temperature = 0.1
+
+
+[[models]]
+name = "Gemma2_9b"   
+provider = "ollama"
+model_id = "gemma2:9b"
+temperature = 0.1
+
+[[models]]
+name = "Mistral_7b"   
+provider = "ollama"
+model_id = "mistral:7b"
+temperature = 0.1
+
+[[models]]
+name = "Mistral_24b"   
+provider = "ollama"
+model_id = "mistral-small:24b"
+temperature = 0.1
+
+[[models]]
+name = "internlm3_8b_instruct"   
+provider = "ollama"
+model_id = "internlm/internlm3-8b-instruct"
+temperature = 0.1

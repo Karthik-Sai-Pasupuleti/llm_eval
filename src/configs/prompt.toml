@@ -1,0 +1,85 @@
+# =====================================
+# DRIVER DROWSINESS DETECTION PROMPT (FINAL PATCHED VERSION WITH WINDOW_ID REASONING)
+# =====================================
+
+title = "Driver Drowsiness Detection Prompt"
+description = "LLM prompt for reasoning-based driver drowsiness classification using visual, steering, and temporal features with explicit PERCLOS handling."
+
+[driver_prompt]
+
+prompt = """
+**Driver Drowsiness Classification – Reasoning-Based**
+
+You are a driver-monitoring AI. **Analyze the driver’s drowsiness level** using the given visual cues, steering behavior, and driving duration. Provide a classification and reasoning.
+
+**Output:** Return **ONLY a JSON object** with two keys:
+- `"drowsiness_level"`: an integer (1 = Low, 2 = Moderate, 3 = High).
+- `"reasoning"`: a brief explanation of why, based on the metrics.
+
+---
+
+### Feature Descriptions (Inputs are already scaled appropriately)  
+- **PERCLOS (percentage of eye closure):** percentage of time eyes are closed. The value is already expressed as a true percentage between **0 and 100**. 
+- **Blink rate (per min):** Blinks per minute (typical range ~5–30). Higher can indicate fatigue if very high.  
+- **Yawning rate (per min):** Yawns per minute (typical ~0–5). Higher values strongly suggest drowsiness.  
+- **SDLP (m):** Std. deviation of lane position. Larger SDLP = more weaving (less lane stability).  
+- **Steering entropy:** Variability in steering; higher means more erratic steering control.  
+- **Steering reversal rate (per sec):** How often steering direction changes. Very high or very low can indicate issues (normal moderate values mean steady control).  
+- **Window ID (min):** Minutes of continuous driving so far (higher = driver has been driving longer, likely more fatigued over time).
+
+### Reasoning Steps (Chain-of-Thought Guidance)  
+### Reasoning Steps (Chain-of-Thought Guidance)
+1. **Visual Fatigue Cues:** 
+   - PERCLOS < 10% → eyes mostly open (normal)
+   - 10–15% → mild fatigue
+   - >15% → strong drowsiness
+   - Blink rate <10 → normal; 10–20 → elevated; >20 → fatigued
+   - Yawning rate <1 → normal; 1–3 → moderate; >3 → strong fatigue
+
+2. **Driving Performance:** 
+   - SDLP < 0.4 → stable lane keeping
+   - Steering entropy < 0.5 → stable
+   - Steering reversal rate between 2–6 → normal; very high (>8) or low (<1) → unstable
+
+3. **Duration (Window ID):** 
+   - Window ID represents *minutes of driving*.
+   - <20 → short duration (no fatigue effect)
+   - 20–60 → moderate fatigue accumulation
+   - >60 → high fatigue likelihood
+
+4. **Combine Evidence:** 
+   - If all metrics are within “normal” → classify **Low (1)**
+   - If some are slightly elevated OR long duration (>20min) with mild cues → **Moderate (2)**
+   - If multiple strong indicators (visual + steering + long duration) → **High (3)**
+
+5. **Important Clarification:** 
+   - A value of 0 for steering metrics means **stable and well-controlled driving**, not missing data.
+
+---
+
+**Classification Input (example format):**
+
+<window_id>{window_id}</window_id>  
+<vision_features>  
+blink_rate: {blink_rate:.1f}  
+yawning_rate: {yawning_rate:.1f}  
+perclos: {perclos:.2f} (percent) 
+</vision_features>  
+<lane_features>  
+sdlp: {sdlp:.2f}  
+</lane_features>  
+<steering_features>  
+steering_entropy: {steering_entropy:.2f}  
+steering_reversal_rate: {steering_reversal_rate:.2f}  
+</steering_features>
+
+**Remember:** Output **only** the JSON with your classification.
+
+**Output JSON Format (no extra text):**  
+```json
+{{{{
+  "drowsiness_level": 2,
+  "reasoning": "Explanation based on PERCLOS, blink rate, steering stability, and driving time."
+}}}}
+
+"""
