@@ -32,6 +32,7 @@ class Bot:
         window_id: Optional[int] = Field(None, description="Duration of the driving session (in minutes).")
         perclos: Optional[StrictFloat] = Field(None, description="Percentage of time eyes are closed.")
         blink_rate: Optional[StrictFloat] = Field(None, description="Number of eye blinks per minute.")
+        blink_duration: Optional[StrictFloat] = Field(None, description="Average duration of eye blinks (seconds).")
         yawning_rate: Optional[StrictFloat] = Field(None, description="Number of yawns per minute.")
         sdlp: Optional[StrictFloat] = Field(None, description="Standard deviation of lane position (m).")
         steering_entropy: Optional[StrictFloat] = Field(None, description="Unpredictability measure of steering movements.")
@@ -120,6 +121,7 @@ if __name__ == "__main__":
         window_id=1,
         perclos=4.5,
         blink_rate=1.0,
+        blink_duration=0.2,
         yawning_rate=0.0,
         sdlp=0.,
         steering_entropy=0.,
