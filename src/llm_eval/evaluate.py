@@ -34,6 +34,7 @@ def predict_drowsiness(df: pd.DataFrame, bot: BaseBot) -> tuple[list, list, list
             window_id=row["window_id"],
             perclos=row["perclos"],
             blink_rate=row["eye_blink_rate"],
+            blink_duration=row["blink_duration"],
             yawning_rate=row["yawning_rate"],
             sdlp=row["std_lane_position"],
             steering_entropy=row["steering_entropy"],
@@ -116,18 +117,18 @@ def evaluate_predictions(df: pd.DataFrame, model_name: str):
 
 def run_evaluation(csv_path: str, model_config_path: str, prompt_path: str):
     """Evaluate multiple models using MLflow tracking."""
-    df_test = load_driver_data(csv_path)
+    df = load_driver_data(csv_path)
     models = load_model_configs(model_config_path)
     prompt_template = toml.load(prompt_path)["driver_prompt"]["prompt"]
 
-    for model in tqdm(models, desc="Evaluating models", ncols=100):
+    for model in tqdm(models, desc="Evaluating models"):
 
         try:
             model_name = model["name"]
             print(f"\nEvaluating {model_name} ({model['provider']})")
 
             mlflow.set_experiment(model_name)
-            df = df_test.head(3).copy()  # For quick testing; remove head() for full eval
+            df_ = df.copy()  # For quick testing; remove head() for full eval
 
             with mlflow.start_run(run_name=model_name):
                 mlflow.log_params({
@@ -146,17 +147,17 @@ def run_evaluation(csv_path: str, model_config_path: str, prompt_path: str):
 
                 preds1, preds2, preds3, reasoning1, reasoning2, reasoning3 = predict_drowsiness(df, bot)
 
-                df["predicted_drowsiness_run1"] = preds1
-                df["predicted_drowsiness_run2"] = preds2
-                df["predicted_drowsiness_run3"] = preds3
-                df["reasoning_run1"] = reasoning1
-                df["reasoning_run2"] = reasoning2
-                df["reasoning_run3"] = reasoning3
+                df_["predicted_drowsiness_run1"] = preds1
+                df_["predicted_drowsiness_run2"] = preds2
+                df_["predicted_drowsiness_run3"] = preds3
+                df_["reasoning_run1"] = reasoning1
+                df_["reasoning_run2"] = reasoning2
+                df_["reasoning_run3"] = reasoning3
 
-                evaluate_predictions(df, model_name)
+                evaluate_predictions(df_, model_name)
 
                 csv_out = f"artifacts/{model_name}_predictions.csv"
-                df.to_csv(csv_out, index=False)
+                df_.to_csv(csv_out, index=False)
                 mlflow.log_artifact(csv_out)
 
                 print(f"Completed evaluation for {model_name}")
