@@ -29,7 +29,7 @@ def predict_drowsiness(df: pd.DataFrame, bot: BaseBot) -> tuple[list, list, list
     preds = {1: [], 2: [], 3: []}
     reasoning = {1: [], 2: [], 3: []}
 
-    for _, row in df.iterrows():
+    for _, row in tqdm(df.iterrows(), desc="Predicting drowsiness", total=len(df)):
         input_data = Bot.Input(
             window_id=row["window_id"],
             perclos=row["perclos"],
@@ -41,7 +41,7 @@ def predict_drowsiness(df: pd.DataFrame, bot: BaseBot) -> tuple[list, list, list
             steering_reversal_rate=row["steering_reversal_rate"],
         )
 
-        for run_id in tqdm(range(1, 4), desc="Predicting drowsiness"):
+        for run_id in range(1, 4):
             try:
                 result = bot.invoke(input_data)
                 level = result["drowsiness_level"]
@@ -49,9 +49,9 @@ def predict_drowsiness(df: pd.DataFrame, bot: BaseBot) -> tuple[list, list, list
                 preds[run_id].append(level)
                 reasoning[run_id].append(generated_reasoning)
 
-                print(f"Run {run_id} Prediction: {level}")
+                # print(f"Run {run_id} Prediction: {level}")
             except Exception as e:
-                print(f"Run {run_id} Prediction failed: {e}")
+                # print(f"Run {run_id} Prediction failed: {e}")
                 preds[run_id].append(None)
                 reasoning[run_id].append(None)
 
@@ -60,7 +60,7 @@ def predict_drowsiness(df: pd.DataFrame, bot: BaseBot) -> tuple[list, list, list
 
 def evaluate_predictions(df: pd.DataFrame, model_name: str):
     """Evaluate and log performance metrics for a given model."""
-    y_true = df["label"]
+    y_true = df["drowsiness_level"]
     metrics_summary = {"accuracy": [], "precision": [], "recall": [], "f1": []}
 
     os.makedirs("artifacts", exist_ok=True)
@@ -145,7 +145,7 @@ def run_evaluation(csv_path: str, model_config_path: str, prompt_path: str):
                 )
                 bot = BaseBot(config)
 
-                preds1, preds2, preds3, reasoning1, reasoning2, reasoning3 = predict_drowsiness(df, bot)
+                preds1, preds2, preds3, reasoning1, reasoning2, reasoning3 = predict_drowsiness(df_, bot)
 
                 df_["predicted_drowsiness_run1"] = preds1
                 df_["predicted_drowsiness_run2"] = preds2
@@ -168,7 +168,7 @@ def run_evaluation(csv_path: str, model_config_path: str, prompt_path: str):
 
 if __name__ == "__main__":
     run_evaluation(
-        csv_path=r"C:\Users\pasupuleti\Desktop\group-project\experiments\drowsiness_data\drowsiness_dataset_cleaned.csv",
-        model_config_path=r"C:\Users\pasupuleti\Desktop\group-project\experiments\llm_eval\src\configs\model_config.toml",
-        prompt_path=r"C:\Users\pasupuleti\Desktop\group-project\experiments\llm_eval\src\configs\prompt.toml",
+        csv_path=r"/home/karthik/Desktop/drowsiness_detection_project/drowsiness_data/drowsiness_dataset_cleaned.csv",
+        model_config_path=r"/home/karthik/Desktop/drowsiness_detection_project/llm_eval/src/configs/model_config.toml",
+        prompt_path=r"/home/karthik/Desktop/drowsiness_detection_project/llm_eval/src/configs/prompt.toml",
     )

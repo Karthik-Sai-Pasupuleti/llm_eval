@@ -4,13 +4,13 @@
 name = "Llama3"
 provider = "ollama"
 model_id = "llama3.1:8b"
-temperature = 0.3
+temperature = 0.1
 
 [[models]]
 name = "phi3" 
 provider = "ollama"
 model_id = "phi3:3.8b"
-temperature = 0.2
+temperature = 0.1
 
 # Qwen models
 [[models]]

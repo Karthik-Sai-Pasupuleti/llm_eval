@@ -11,6 +11,8 @@ wheels/
 
 # Local runs and MLflow
 runs/
+artifacts/
+mlruns/
 .mlruns/
 .env
 *.env
