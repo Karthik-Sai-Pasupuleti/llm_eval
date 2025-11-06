@@ -22,6 +22,7 @@ dependencies = [
     "langchain-ollama>=0.1",
     "PyYAML>=6.0",
     "seaborn>=0.13.2",
+    "langchain-community>=0.4.1",
 ]
 
 [build-system]

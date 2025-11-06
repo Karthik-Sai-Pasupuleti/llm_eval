@@ -26,24 +26,30 @@ model_id = "qwen2.5:14b"
 temperature = 0.1
 
 
-[[models]]
-name = "DeepSeek-R1-8B"   
-provider = "ollama"
-model_id = "deepseek-r1:8b"
-temperature = 0.1
+# [[models]]
+# name = "DeepSeek-R1-8B"   
+# provider = "ollama"
+# model_id = "deepseek-r1:8b"
+# temperature = 0.1
 
 
-[[models]]
-name = "DeepSeek-R1-14B"   
-provider = "ollama"
-model_id = "deepseek-r1:14b"
-temperature = 0.1
-
+# [[models]]
+# name = "DeepSeek-R1-14B"   
+# provider = "ollama"
+# model_id = "deepseek-r1:14b"
+# temperature = 0.1
 
 [[models]]
 name = "phi4-mini_3_8B"   
 provider = "ollama"
 model_id = "phi4-mini:3.8b"
+temperature = 0.1
+
+
+[[models]]
+name = "gpt_oss_20b"   
+provider = "ollama"
+model_id = "gpt-oss:20b"
 temperature = 0.1
 
 [[models]]
