@@ -98,6 +98,10 @@ class BaseBot(Bot):
         if len(self.history) > self.history_limit:
             self.history = self.history[-self.history_limit:]
 
+    def clear_history(self):
+        """Reset conversation history (call between participants)."""
+        self.history = []
+
 
     def invoke(self, input_data: Bot.Input) -> dict:
         """Invoke the driver assistance bot and return structured output (strict JSON)."""
@@ -175,10 +179,10 @@ if __name__ == "__main__":
             hrv_wavelet_entropy = 0.5,
             hrv_lfhf = 0.8
         )
+
         # Run inference multiple times to test history
         result1 = bot.invoke(input_data)
         print(f"History: {bot.history}")
         print(f"\n--- Structured Output (Run {i + 1}) ---")
         print(result1)
         print("--------------------------------------------------\n")
-

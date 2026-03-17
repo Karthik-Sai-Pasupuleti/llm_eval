@@ -79,11 +79,17 @@ def predict_drowsiness(
 
     return preds, reasoning
 
-def evaluate_predictions(df: pd.DataFrame, model_name: str):
-    """Evaluate and log performance metrics for one or multiple runs."""
+def evaluate_predictions(
+    df: pd.DataFrame,
+    model_name: str,
+    participant_id: str,
+) -> dict:
+    """
+    Evaluate predictions for one participant and log metrics prefixed by participant_id.
+    Returns a dict of {col: {accuracy, precision, recall, f1}} for later aggregation.
+    """
     y_true = df["drowsiness_level"]
 
-    # Detect prediction columns automatically
     run_cols = [col for col in df.columns if col.startswith("predicted_drowsiness_run")]
     if not run_cols:
         run_cols = ["predicted_drowsiness"]
@@ -98,7 +104,7 @@ def evaluate_predictions(df: pd.DataFrame, model_name: str):
         y_pred_valid = [y_pred[i] for i in valid_idx]
 
         if not y_pred_valid:
-            print(f"No valid predictions for {col}, skipping.")
+            print(f"  No valid predictions for {participant_id}/{col}, skipping.")
             continue
 
         acc = accuracy_score(y_true_valid, y_pred_valid)
@@ -108,41 +114,42 @@ def evaluate_predictions(df: pd.DataFrame, model_name: str):
 
         metric_sets[col] = {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1}
 
+        # Log per-participant metrics with participant prefix
         mlflow.log_metrics({
-            f"{col}_accuracy": acc,
-            f"{col}_precision": prec,
-            f"{col}_recall": rec,
-            f"{col}_f1": f1,
+            f"{participant_id}_{col}_accuracy": acc,
+            f"{participant_id}_{col}_precision": prec,
+            f"{participant_id}_{col}_recall": rec,
+            f"{participant_id}_{col}_f1": f1,
         })
 
-        # Save detailed report
-        report_path = f"artifacts/{model_name}_{col}_report.txt"
+        report_path = f"artifacts/{model_name}_{participant_id}_{col}_report.txt"
         with open(report_path, "w") as f:
             f.write(classification_report(y_true_valid, y_pred_valid))
         mlflow.log_artifact(report_path)
 
-        print(f"\n{model_name} | {col}")
-        print(f"  Accuracy:  {acc:.3f}")
-        print(f"  Precision: {prec:.3f}")
-        print(f"  Recall:    {rec:.3f}")
-        print(f"  F1-Score:  {f1:.3f}")
+        print(f"  [{participant_id}] Accuracy: {acc:.3f}  Precision: {prec:.3f}  Recall: {rec:.3f}  F1: {f1:.3f}")
 
-    # Log overall mean if multiple runs
-    if len(metric_sets) > 1:
-        avg_metrics = {
-            "accuracy_mean": sum(v["accuracy"] for v in metric_sets.values()) / len(metric_sets),
-            "precision_mean": sum(v["precision"] for v in metric_sets.values()) / len(metric_sets),
-            "recall_mean": sum(v["recall"] for v in metric_sets.values()) / len(metric_sets),
-            "f1_mean": sum(v["f1"] for v in metric_sets.values()) / len(metric_sets),
-        }
-        mlflow.log_metrics(avg_metrics)
-        print("\nAverage metrics across runs:")
-        for k, v in avg_metrics.items():
-            print(f"  {k}: {v:.3f}")
+    return metric_sets
+
+
+def log_overall_metrics(all_metric_sets: list[dict]):
+    """Average metrics across all participants and log as overall_ metrics."""
+    combined: dict[str, list] = {}
+    for ms in all_metric_sets:
+        for col, metrics in ms.items():
+            for k, v in metrics.items():
+                combined.setdefault(f"overall_{col}_{k}", []).append(v)
+
+    averaged = {key: sum(vals) / len(vals) for key, vals in combined.items()}
+    mlflow.log_metrics(averaged)
+
+    print("\nOverall metrics across all participants:")
+    for k, v in averaged.items():
+        print(f"  {k}: {v:.3f}")
 
 
 def run_evaluation(
-    csv_path: str,
+    participants: list[tuple[str, str]],
     model_config_path: str,
     prompt_path: str,
     multi_run: bool = False,
@@ -151,36 +158,32 @@ def run_evaluation(
     history_limit_: int = 10,
 ):
     """
-    Evaluate multiple models using MLflow tracking.
-    Supports single-pass or multi-pass evaluation.
+    One MLflow experiment per model, covering all participants sequentially.
+    History is cleared between participants; data is sorted by window_id within each.
+    Logs per-participant metrics and overall aggregate metrics.
     """
-    df = load_driver_data(csv_path)
     models = load_model_configs(model_config_path)
     prompt_template = toml.load(prompt_path)["driver_prompt"]["prompt"]
-
     existing_experiments = {exp.name: exp.experiment_id for exp in mlflow.search_experiments()}
 
     for model in tqdm(models, desc="Evaluating models"):
+        experiment_name = model["name"]
         try:
-            model_name = f'{model["name"]}_with_history'
-            print(f"\nChecking {model_name}...")
-
-            if model_name in existing_experiments:
-                print(f"Experiment '{model_name}' already exists — skipping.")
+            if experiment_name in existing_experiments:
+                print(f"\nExperiment '{experiment_name}' already exists — skipping.")
                 continue
 
-            print(f"Evaluating {model_name} ({model['provider']})")
+            print(f"\nEvaluating {experiment_name} ({model['provider']}) across {len(participants)} participants")
+            mlflow.set_experiment(experiment_name)
 
-            mlflow.set_experiment(model_name)
-            df_ = df.copy()
-
-            with mlflow.start_run(run_name=model_name):
+            with mlflow.start_run(run_name=experiment_name):
                 mlflow.log_params({
                     "provider": model["provider"],
                     "model_id": model["model_id"],
                     "temperature": model.get("temperature", 0.0),
                     "multi_run": multi_run,
                     "num_runs": num_runs,
+                    "num_participants": len(participants),
                 })
 
                 config = Bot.BotConfig(
@@ -189,40 +192,98 @@ def run_evaluation(
                     prompt_template=prompt_template,
                     temperature=model.get("temperature", 0.0),
                 )
-                bot = BaseBot(config, enable_history = enable_history_, history_limit=history_limit_)
+                # Single bot reused across all participants; history cleared between them
+                bot = BaseBot(config, enable_history=enable_history_, history_limit=history_limit_)
 
-                preds_dict, reasoning_dict = predict_drowsiness(df_, bot, multi_run=multi_run, num_runs=num_runs)
+                all_metric_sets = []
+                all_dfs = []
 
-                # Assign columns dynamically
-                if multi_run:
-                    for run_id in range(1, num_runs + 1):
-                        df_[f"predicted_drowsiness_run{run_id}"] = preds_dict[run_id]
-                        df_[f"reasoning_run{run_id}"] = reasoning_dict[run_id]
-                else:
-                    df_["predicted_drowsiness"] = preds_dict[1]
-                    df_["reasoning"] = reasoning_dict[1]
+                for participant_id, csv_path in tqdm(participants, desc="Participants", leave=False):
+                    print(f"\n  --- Participant: {participant_id} ---")
+                    try:
+                        df = load_driver_data(csv_path)
+                        if "window_id" in df.columns:
+                            df = df.sort_values("window_id").reset_index(drop=True)
 
-                evaluate_predictions(df_, model_name)
+                        # Clear history before each participant so contexts don't bleed across
+                        bot.clear_history()
 
-                csv_out = f"artifacts/{model_name}_predictions.csv"
-                os.makedirs("artifacts", exist_ok=True)
-                df_.to_csv(csv_out, index=False)
-                mlflow.log_artifact(csv_out)
+                        preds_dict, reasoning_dict = predict_drowsiness(df, bot, multi_run=multi_run, num_runs=num_runs)
 
-                print(f" Completed evaluation for {model_name}")
+                        df["participant_id"] = participant_id
+                        if multi_run:
+                            for run_id in range(1, num_runs + 1):
+                                df[f"predicted_drowsiness_run{run_id}"] = preds_dict[run_id]
+                                df[f"reasoning_run{run_id}"] = reasoning_dict[run_id]
+                        else:
+                            df["predicted_drowsiness"] = preds_dict[1]
+                            df["reasoning"] = reasoning_dict[1]
+
+                        ms = evaluate_predictions(df, experiment_name, participant_id)
+                        all_metric_sets.append(ms)
+                        all_dfs.append(df)
+
+                        # Save per-participant artifact
+                        os.makedirs("artifacts", exist_ok=True)
+                        csv_out = f"artifacts/{experiment_name}_{participant_id}_predictions.csv"
+                        df.to_csv(csv_out, index=False)
+                        mlflow.log_artifact(csv_out)
+
+                    except Exception as e:
+                        print(f"  Failed for participant {participant_id}: {e}")
+
+                # Log overall metrics across all participants
+                if all_metric_sets:
+                    log_overall_metrics(all_metric_sets)
+
+                # Save combined CSV of all participants
+                if all_dfs:
+                    os.makedirs("artifacts", exist_ok=True)
+                    combined_csv = f"artifacts/{experiment_name}_all_participants.csv"
+                    pd.concat(all_dfs, ignore_index=True).to_csv(combined_csv, index=False)
+                    mlflow.log_artifact(combined_csv)
+
+                print(f"\nCompleted evaluation for {experiment_name}")
 
         except Exception as e:
-            print(f"Evaluation failed for {model.get('name', 'Unknown')}: {e}")
+            print(f"Evaluation failed for {experiment_name}: {e}")
 
+
+def dataset_directories(root_dir: str) -> list[str]:
+    """Recursively find all CSV files ending with 'Data.csv' under root_dir."""
+    dataset_list = []
+    for subdir, _, files in os.walk(root_dir):
+        for file in files:
+            if file.endswith("Data.csv"):
+                dataset_list.append(os.path.join(subdir, file))
+    return dataset_list
+
+
+def participant_id_from_path(csv_path: str) -> str:
+    """Extract participant identifier from the CSV path.
+
+    E.g. '.../01_V_Data/V_Data.csv' → '01_V'
+    """
+    folder = os.path.basename(os.path.dirname(csv_path))
+    return folder.replace("_Data", "")
 
 
 if __name__ == "__main__":
+
+    csv_paths = dataset_directories("/home/karthik/Desktop/llm_eval/Refined_Participants_Data")
+    participants = [(participant_id_from_path(p), p) for p in sorted(csv_paths)]
+
+    print("Found participants:")
+    for pid, path in participants:
+        print(f"  {pid}: {path}")
+
     run_evaluation(
-        csv_path=r"/home/karthik/Desktop/llm_eval/Refined_Participants_Data/01_V_Data/V_Data.csv",
+        participants=participants,
         model_config_path=r"src/configs/model_config.toml",
         prompt_path=r"src/configs/prompt.toml",
         multi_run=False,   # Set False for single-pass mode
-        num_runs=4,       # Used only if multi_run=True
-        enable_history_=False,  # Enable history for all runs
-        history_limit_=10,  # Number of past interactions to include in the prompt history
+        num_runs=4,        # Used only if multi_run=True
+        enable_history_=True,
+        history_limit_=10,
     )
+
