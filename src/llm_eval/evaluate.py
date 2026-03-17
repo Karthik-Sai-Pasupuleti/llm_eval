@@ -42,12 +42,19 @@ def predict_drowsiness(
             window_id=row["window_id"],
             perclos=row["perclos"],
             blink_rate=row["eye_blink_rate"],
-            blink_duration_mean=row["blink_duration_mean"],
-            blink_duration_max=row["blink_duration_max"],
+            blink_duration_mean= float(row["blink_duration_mean"]) if "blink_duration_mean" in row and pd.notna(row["blink_duration_mean"]) else None,
+            blink_duration_max= float(row["blink_duration_max"]) if "blink_duration_max" in row and pd.notna(row["blink_duration_max"]) else None,
             yawning_rate=row["yawning_rate"],
             sdlp=row["std_lane_position"],
             steering_entropy=row["steering_entropy"],
             steering_reversal_rate=row["steering_reversal_rate"],
+            bpm=float(row["bpm"]) if "bpm" in row and pd.notna(row["bpm"]) else None,
+            hrv_sdnn=float(row["hrv_sdnn"]) if "hrv_sdnn" in row and pd.notna(row["hrv_sdnn"]) else None,
+            hrv_rmssd=float(row["hrv_rmssd"]) if "hrv_rmssd" in row and pd.notna(row["hrv_rmssd"]) else None,
+            hrv_sd1=float(row["hrv_sd1"]) if "hrv_sd1" in row and pd.notna(row["hrv_sd1"]) else None,
+            hrv_hf=float(row["hrv_hf"]) if "hrv_hf" in row and pd.notna(row["hrv_hf"]) else None,
+            hrv_wavelet_entropy=float(row["hrv_wavelet_entropy"]) if "hrv_wavelet_entropy" in row and pd.notna(row["hrv_wavelet_entropy"]) else None,
+            hrv_lfhf=float(row["hrv_lfhf"]) if "hrv_lfhf" in row and pd.notna(row["hrv_lfhf"]) else None,
         )
 
         if multi_run:
@@ -140,6 +147,8 @@ def run_evaluation(
     prompt_path: str,
     multi_run: bool = False,
     num_runs: int = 4,
+    enable_history_: bool = True,
+    history_limit_: int = 10,
 ):
     """
     Evaluate multiple models using MLflow tracking.
@@ -180,7 +189,7 @@ def run_evaluation(
                     prompt_template=prompt_template,
                     temperature=model.get("temperature", 0.0),
                 )
-                bot = BaseBot(config, enable_history = True, history_limit=10)
+                bot = BaseBot(config, enable_history = enable_history_, history_limit=history_limit_)
 
                 preds_dict, reasoning_dict = predict_drowsiness(df_, bot, multi_run=multi_run, num_runs=num_runs)
 
@@ -209,9 +218,11 @@ def run_evaluation(
 
 if __name__ == "__main__":
     run_evaluation(
-        csv_path=r"/home/karthik/Desktop/drowsiness_detection_project/drowsiness_data/balu_processed_data.csv",
-        model_config_path=r"/home/karthik/Desktop/drowsiness_detection_project/llm_eval/src/configs/model_config.toml",
-        prompt_path=r"/home/karthik/Desktop/drowsiness_detection_project/llm_eval/src/configs/prompt.toml",
+        csv_path=r"/home/karthik/Desktop/llm_eval/Refined_Participants_Data/01_V_Data/V_Data.csv",
+        model_config_path=r"src/configs/model_config.toml",
+        prompt_path=r"src/configs/prompt.toml",
         multi_run=False,   # Set False for single-pass mode
         num_runs=4,       # Used only if multi_run=True
+        enable_history_=False,  # Enable history for all runs
+        history_limit_=10,  # Number of past interactions to include in the prompt history
     )

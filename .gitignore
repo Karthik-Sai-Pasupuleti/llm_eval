@@ -12,6 +12,7 @@ wheels/
 # Local runs and MLflow
 runs/
 artifacts/
+Refined_Participants_Data/
 mlruns/
 .mlruns/
 .env

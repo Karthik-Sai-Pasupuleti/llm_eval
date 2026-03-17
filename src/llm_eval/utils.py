@@ -27,6 +27,10 @@ def load_driver_data(csv_path: str) -> pd.DataFrame:
 
     df = df.rename(columns=rename_map)
 
+    # Map annotator labels to drowsiness_level integers (1=Low, 2=Moderate, 3=High)
+    label_map = {"Low": 1, "Moderate": 2, "High": 3}
+    df["drowsiness_level"] = df["Annotator_1"].map(label_map)
+
     # Optional: check expected columns
     expected_cols = [
         "perclos",

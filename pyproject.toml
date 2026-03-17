@@ -23,6 +23,7 @@ dependencies = [
     "PyYAML>=6.0",
     "seaborn>=0.13.2",
     "langchain-community>=0.4.1",
+    "toml>=0.10.2",
 ]
 
 [build-system]
