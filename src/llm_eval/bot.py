@@ -8,7 +8,7 @@ Strict structured output enforcement using JSON schema.
 import toml
 import copy
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictFloat
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
@@ -31,21 +31,21 @@ class Bot:
     class Input(BaseModel):
         """Input data for the driver assistance bot"""
         window_id: Optional[int] = Field(None, description="Duration of the driving session (in minutes).")
-        perclos: Optional[float] = Field(None, description="Percentage of time eyes are closed.")
-        blink_rate: Optional[float] = Field(None, description="Number of eye blinks per minute.")
-        blink_duration_mean: Optional[float] = Field(None, description="Average duration of eye blinks (seconds).")
-        blink_duration_max: Optional[float] = Field(None, description="max duration of eye blinks (seconds).")
-        yawning_rate: Optional[float] = Field(None, description="Number of yawns per minute.")
-        sdlp: Optional[float] = Field(None, description="Standard deviation of lane position (m).")
-        steering_entropy: Optional[float] = Field(None, description="Unpredictability measure of steering movements.")
-        steering_reversal_rate: Optional[float] = Field(None, description="Steering direction changes per minute.")
-        bpm: Optional[float] = Field(None)
-        hrv_sdnn: Optional[float] = Field(None)
-        hrv_rmssd: Optional[float] = Field(None)
-        hrv_sd1: Optional[float] = Field(None)
-        hrv_hf: Optional[float] = Field(None)
-        hrv_wavelet_entropy: Optional[float] = Field(None)
-        hrv_lfhf: Optional[float] = Field(None)
+        perclos: Optional[StrictFloat] = Field(None, description="Percentage of time eyes are closed.")
+        blink_rate: Optional[StrictFloat] = Field(None, description="Number of eye blinks per minute.")
+        blink_duration_mean: Optional[StrictFloat]  = Field(None, description="Average duration of eye blinks (seconds).")
+        blink_duration_max: Optional[StrictFloat]  = Field(None, description="max duration of eye blinks (seconds).")
+        yawning_rate: Optional[StrictFloat] = Field(None, description="Number of yawns per minute.")
+        sdlp: Optional[StrictFloat] = Field(None, description="Standard deviation of lane position (m).")
+        steering_entropy: Optional[StrictFloat] = Field(None, description="Unpredictability measure of steering movements.")
+        steering_reversal_rate: Optional[StrictFloat] = Field(None, description="Steering direction changes per minute.")
+        bpm: Optional[StrictFloat] = Field(None)
+        hrv_sdnn: Optional[StrictFloat] = Field(None)
+        hrv_rmssd: Optional[StrictFloat] = Field(None)
+        hrv_sd1: Optional[StrictFloat] = Field(None)
+        hrv_hf: Optional[StrictFloat] = Field(None)
+        hrv_wavelet_entropy: Optional[StrictFloat] = Field(None)
+        hrv_lfhf: Optional[StrictFloat] = Field(None)
 
     # Define JSON schema for structured output
     output_schema = {
@@ -119,10 +119,6 @@ class BaseBot(Bot):
         # Add history into the input variables for the prompt template
         data["history"] = history_text
 
-        # Replace None with 0.0 for fields that use float format specs in the prompt
-        for key in ("blink_duration_mean", "blink_duration_max"):
-            if data.get(key) is None:
-                data[key] = 0.0
 
         response = self.chain.invoke(data)
 
@@ -132,11 +128,9 @@ class BaseBot(Bot):
                 f" Invalid structured output from model. Expected dict, got {type(response)}.\nResponse: {response}"
             )
 
-        # Coerce drowsiness_level to int (some models return it as a string)
-        try:
-            response["drowsiness_level"] = int(response["drowsiness_level"])
-        except (KeyError, TypeError, ValueError) as e:
-            raise ValueError(f"Invalid 'drowsiness_level' value: {response.get('drowsiness_level')}") from e
+        # Validate type of drowsiness_level
+        if not isinstance(response.get("drowsiness_level"), int):
+            raise ValueError(f" Invalid 'drowsiness_level' type: {type(response.get('drowsiness_level'))}")
         
         if self.enable_history:
             self._update_history(raw_data, response)
@@ -167,8 +161,8 @@ if __name__ == "__main__":
             window_id=1 + i,
             perclos=4.5,
             blink_rate=1.0,
-            blink_duration_mean=None,
-            blink_duration_max=None,
+            blink_duration_mean=10,
+            blink_duration_max=10,
             yawning_rate=0.0,
             sdlp=0.2,
             steering_entropy=0.1,
