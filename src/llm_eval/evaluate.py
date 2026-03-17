@@ -39,15 +39,22 @@ def predict_drowsiness(
 
     for _, row in tqdm(df.iterrows(), desc="Predicting drowsiness", total=len(df)):
         input_data = Bot.Input(
-            window_id=row["window_id"],
-            perclos=row["perclos"],
-            blink_rate=row["eye_blink_rate"],
-            blink_duration_mean=row["blink_duration_mean"],
-            blink_duration_max=row["blink_duration_max"],
-            yawning_rate=row["yawning_rate"],
-            sdlp=row["std_lane_position"],
-            steering_entropy=row["steering_entropy"],
-            steering_reversal_rate=row["steering_reversal_rate"],
+            window_id=int(row["window_id"]),
+            perclos=float(row["perclos"]),
+            blink_rate=float(row["eye_blink_rate"]),
+            blink_duration_mean=float(row["blink_duration_mean"]) if "blink_duration_mean" in row and pd.notna(row["blink_duration_mean"]) else None,
+            blink_duration_max=float(row["blink_duration_max"]) if "blink_duration_max" in row and pd.notna(row["blink_duration_max"]) else None,
+            yawning_rate=float(row["yawning_rate"]),
+            sdlp=float(row["std_lane_position"]),
+            steering_entropy=float(row["steering_entropy"]),
+            steering_reversal_rate=float(row["steering_reversal_rate"]),
+            bpm=float(row["bpm"]) if "bpm" in row and pd.notna(row["bpm"]) else None,
+            hrv_sdnn=float(row["hrv_sdnn"]) if "hrv_sdnn" in row and pd.notna(row["hrv_sdnn"]) else None,
+            hrv_rmssd=float(row["hrv_rmssd"]) if "hrv_rmssd" in row and pd.notna(row["hrv_rmssd"]) else None,
+            hrv_sd1=float(row["hrv_sd1"]) if "hrv_sd1" in row and pd.notna(row["hrv_sd1"]) else None,
+            hrv_hf=float(row["hrv_hf"]) if "hrv_hf" in row and pd.notna(row["hrv_hf"]) else None,
+            hrv_wavelet_entropy=float(row["hrv_wavelet_entropy"]) if "hrv_wavelet_entropy" in row and pd.notna(row["hrv_wavelet_entropy"]) else None,
+            hrv_lfhf=float(row["hrv_lfhf"]) if "hrv_lfhf" in row and pd.notna(row["hrv_lfhf"]) else None,
         )
 
         if multi_run:
@@ -203,15 +210,20 @@ def run_evaluation(
                 print(f" Completed evaluation for {model_name}")
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"Prediction failed: {e}")
+            preds[1].append(None)
+            reasoning[1].append(None)
             print(f"Evaluation failed for {model.get('name', 'Unknown')}: {e}")
 
 
-
 if __name__ == "__main__":
+    mlflow.set_tracking_uri("sqlite:///mlflow.db")
     run_evaluation(
-        csv_path=r"/home/karthik/Desktop/drowsiness_detection_project/drowsiness_data/balu_processed_data.csv",
-        model_config_path=r"/home/karthik/Desktop/drowsiness_detection_project/llm_eval/src/configs/model_config.toml",
-        prompt_path=r"/home/karthik/Desktop/drowsiness_detection_project/llm_eval/src/configs/prompt.toml",
+        csv_path=r"/home/vanchha/llm_eval/Data_Files/V_Data.csv",
+        model_config_path=r"/home/vanchha/llm_eval/src/configs/model_config.toml",
+        prompt_path=r"/home/vanchha/llm_eval/src/configs/prompt.toml",
         multi_run=False,   # Set False for single-pass mode
         num_runs=4,       # Used only if multi_run=True
     )

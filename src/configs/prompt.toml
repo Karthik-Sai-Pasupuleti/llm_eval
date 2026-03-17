@@ -3,7 +3,7 @@
 # =====================================
 
 title = "Driver Drowsiness Detection Prompt"
-description = "LLM prompt for reasoning-based driver drowsiness classification using visual, steering, and temporal features with explicit PERCLOS handling."
+description = "LLM prompt for reasoning-based driver drowsiness classification using visual, steering, physiological, and temporal features with explicit PERCLOS handling."
 
 [driver_prompt]
 
@@ -32,17 +32,25 @@ prompt = """
     - **Steering entropy:** Variability in steering input; reflects how smooth or erratic steering control is.
     - **Steering reversal rate (per sec):** Frequency of steering direction changes; indicates control steadiness.
     - **Window ID (min):** Minutes of continuous driving; higher values imply longer driving time and potential fatigue buildup.
+    - **BPM:** Heart rate in beats per minute; elevated or very low BPM can indicate physiological stress or fatigue.
+    - **HRV_SDNN (ms):** Standard deviation of NN intervals; lower values indicate reduced autonomic flexibility and fatigue.
+    - **HRV_RMSSD (ms):** Root mean square of successive RR differences; low values suggest reduced parasympathetic activity (fatigue).
+    - **HRV_SD1 (ms):** Poincare short-term HRV; reflects beat-to-beat variability, lower = more fatigued.
+    - **HRV_HF:** High-frequency HRV power; indicator of parasympathetic/rest activity, decreases with fatigue.
+    - **HRV_WaveletEntropy:** Complexity of HRV signal; lower entropy can indicate monotonic, fatigued state.
+    - **HRV_LFHF:** LF/HF ratio; sympathovagal balance; elevated ratio indicates sympathetic dominance (stress/fatigue).
 
     ---
 
     ### **Reasoning Process (Chain-of-Thought Guidance)**
     1. Assess visual fatigue cues (PERCLOS, blink rate, blink duration, yawning rate).  
     2. Evaluate lane stability and steering control (SDLP, steering entropy, reversal rate).  
-    3. Consider driving duration (Window ID) for accumulated fatigue.  
-    4. Integrate all metrics to infer overall drowsiness level.  
-       - Normal cues and stable driving → **Low (1)**  
-       - Moderate deviations or longer duration → **Moderate (2)**  
-       - Strong visual and steering fatigue indicators → **High (3)**  
+    3. Assess physiological state (BPM, HRV_SDNN, HRV_RMSSD, HRV_SD1, HRV_HF, HRV_WaveletEntropy, HRV_LFHF).
+    4. Consider driving duration (Window ID) for accumulated fatigue.  
+    5. Integrate all metrics to infer overall drowsiness level.  
+       - Normal cues and stable driving, healthy HRV → **Low (1)**  
+       - Moderate deviations across any modality → **Moderate (2)**  
+       - Strong visual, steering, and physiological fatigue indicators → **High (3)**  
 
     ---
 
@@ -50,26 +58,26 @@ prompt = """
 
     Example 1:
     Input:
-    window_id: 9, perclos: 2.81, blink_rate: 16.25, blink_duration_mean: 0.1056, blink_duration_max: 0.12, yawning_rate: 0.0, sdlp: 0.25, steering_entropy: 0.04, steering_reversal_rate: 1.0
+    window_id: 9, perclos: 2.81, blink_rate: 16.25, blink_duration_mean: 0.1056, blink_duration_max: 0.12, yawning_rate: 0.0, sdlp: 0.25, steering_entropy: 0.04, steering_reversal_rate: 1.0, bpm: 77.2, hrv_sdnn: 75.4, hrv_rmssd: 89.7, hrv_sd1: 64.4, hrv_hf: 0.171, hrv_wavelet_entropy: 0.0136, hrv_lfhf: N/A
     Output:
     ```json
-    {{{{ "drowsiness_level": 1, "reasoning": "Low eye closure, short blink duration, and stable steering indicate an alert driver early in the trip." }}}}
+    {{{{ "drowsiness_level": 1, "reasoning": "Low PERCLOS, short blink duration, stable steering, and healthy HRV values indicate an alert driver." }}}}
     ```
 
     Example 2:
     Input:
-    window_id: 10, perclos: 5.45, blink_rate: 23.27, blink_duration_mean: 0.1422, blink_duration_max: 0.16, yawning_rate: 0.0, sdlp: 0.20, steering_entropy: 0.07, steering_reversal_rate: 0.0
+    window_id: 14, perclos: 3.21, blink_rate: 19.1, blink_duration_mean: 0.14, blink_duration_max: 0.18, yawning_rate: 0.0, sdlp: 0.13, steering_entropy: 0.036, steering_reversal_rate: 0.0, bpm: 75.1, hrv_sdnn: 299.0, hrv_rmssd: 424.9, hrv_sd1: 306.4, hrv_hf: 0.115, hrv_wavelet_entropy: 0.0086, hrv_lfhf: 0.394
     Output:
     ```json
-    {{{{ "drowsiness_level": 2, "reasoning": "Elevated blink rate and longer blink duration suggest mild fatigue despite consistent lane control." }}}}
+    {{{{ "drowsiness_level": 2, "reasoning": "Slightly elevated blink rate and lane drift combined with mildly abnormal HRV elevation suggest moderate fatigue." }}}}
     ```
 
     Example 3:
     Input:
-    window_id: 21, perclos: 9.21, blink_rate: 25.33, blink_duration_mean: 0.2212, blink_duration_max: 0.24, yawning_rate: 0.0, sdlp: 0.35, steering_entropy: 0.07, steering_reversal_rate: 0.0
+    window_id: 15, perclos: 10.02, blink_rate: 15.9, blink_duration_mean: 0.19, blink_duration_max: 0.25, yawning_rate: 0.0, sdlp: 0.09, steering_entropy: 0.108, steering_reversal_rate: 0.0, bpm: 76.0, hrv_sdnn: 75.9, hrv_rmssd: 94.3, hrv_sd1: 67.7, hrv_hf: 0.070, hrv_wavelet_entropy: 0.0166, hrv_lfhf: N/A
     Output:
     ```json
-    {{{{ "drowsiness_level": 3, "reasoning": "High blink rate, long blink duration, and extended driving indicate severe fatigue and reduced alertness." }}}}
+    {{{{ "drowsiness_level": 3, "reasoning": "High PERCLOS and elevated steering entropy combined with reduced HRV_HF indicate strong physiological and visual fatigue." }}}}
     ```
 
     Here is recent interaction history (if any):
@@ -82,19 +90,28 @@ prompt = """
 
     <window_id>{window_id}</window_id>  
     <vision_features>  
-    blink_rate: {blink_rate:.1f}  
-    blink_duration_mean: {blink_duration_mean:.3f}  
-    blink_duration_max: {blink_duration_max:.3f} 
-    yawning_rate: {yawning_rate:.1f}  
-    perclos: {perclos:.2f} (percent)  
+    blink_rate: {blink_rate}  
+    blink_duration_mean: {blink_duration_mean}  
+    blink_duration_max: {blink_duration_max} 
+    yawning_rate: {yawning_rate}  
+    perclos: {perclos} (percent)  
     </vision_features>  
     <lane_features>  
-    sdlp: {sdlp:.2f}  
+    sdlp: {sdlp}  
     </lane_features>  
     <steering_features>  
-    steering_entropy: {steering_entropy:.2f}  
-    steering_reversal_rate: {steering_reversal_rate:.2f}  
+    steering_entropy: {steering_entropy}  
+    steering_reversal_rate: {steering_reversal_rate}  
     </steering_features>  
+    <physiological_features>
+    bpm: {bpm}
+    hrv_sdnn: {hrv_sdnn}
+    hrv_rmssd: {hrv_rmssd}
+    hrv_sd1: {hrv_sd1}
+    hrv_hf: {hrv_hf}
+    hrv_wavelet_entropy: {hrv_wavelet_entropy}
+    hrv_lfhf: {hrv_lfhf}
+    </physiological_features>
 
     ---
 
@@ -102,7 +119,7 @@ prompt = """
     ```json
     {{{{
       "drowsiness_level": X,
-      "reasoning": "Short reasoning based on visual, steering, and time metrics."
+      "reasoning": "Short reasoning based on visual, steering, physiological, and time metrics."
     }}}}
     ```
 """
