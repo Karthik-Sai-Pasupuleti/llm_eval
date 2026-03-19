@@ -5,6 +5,7 @@ Cycles through all participants under a root directory.
 One MLflow experiment per model, covering all participants sequentially.
 Sends a single collaged image per window to the VLM for ambiguity and facial behaviour detection.
 Individual frames are saved separately to MLflow for human observer review.
+Videos are pre-cropped manually — no crop logic applied.
 """
 
 import os
@@ -68,21 +69,6 @@ def extract_frames(video_path: str, num_frames: int = 60) -> list[np.ndarray]:
             frames.append(frame)
     cap.release()
     return frames
-
-
-def center_crop_half(
-    frame: np.ndarray,
-    width_fraction: float = 0.5,
-    height_fraction: float = 0.5,
-    offset_x: int = 0,
-    offset_y: int = 0,
-) -> np.ndarray:
-    h, w = frame.shape[:2]
-    new_w = int(w * width_fraction)
-    new_h = int(h * height_fraction)
-    left = max(0, min((w - new_w) // 2 + offset_x, w - new_w))
-    top = max(0, min((h - new_h) // 2 + offset_y, h - new_h))
-    return frame[top:top + new_h, left:left + new_w]
 
 
 def frame_to_base64(frame: np.ndarray) -> str:
@@ -242,15 +228,8 @@ def evaluate_participant(
     temperature: float,
     contact_sheet_cols: int,
     thumb_width: int,
-    crop_offset_x: int,
-    crop_offset_y: int,
     save_frames: bool,
 ) -> list[dict]:
-    """
-    Run VLM inference on all windows for one participant.
-    Logs per-participant metrics and artifacts to the active MLflow run.
-    Returns list of result dicts.
-    """
     results = []
 
     for window in tqdm(windows, desc=f"  Windows [{participant_id}]", leave=False):
@@ -277,14 +256,9 @@ def evaluate_participant(
             if not frames:
                 raise RuntimeError("No frames extracted.")
 
-            cropped_frames = [
-                center_crop_half(f, offset_x=crop_offset_x, offset_y=crop_offset_y)
-                for f in frames
-            ]
-
             output = query_vlm(
                 model_id=model_id,
-                frames=cropped_frames,
+                frames=frames,
                 temperature=temperature,
                 cols=contact_sheet_cols,
                 thumb_width=thumb_width,
@@ -306,7 +280,7 @@ def evaluate_participant(
                     f"window_{window['window_id']}"
                 )
                 save_individual_frames(
-                    cropped_frames,
+                    frames,
                     window_frames_dir,
                     highlight_frame_ids=highlight_ids,
                 )
@@ -334,7 +308,6 @@ def evaluate_participant(
 
         results.append(output)
 
-    # Log per-participant metrics to active MLflow run
     total = len(results)
     errors = sum(1 for r in results if r["error"])
     amb = sum(1 for r in results if r.get("ambiguities_detected") is True)
@@ -350,7 +323,6 @@ def evaluate_participant(
         f"{participant_id}_facial_behaviour_rate": face / max(processed, 1),
     })
 
-    # Save per-participant JSON artifact
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{model_name}_{participant_id}_results.json")
     with open(out_path, "w") as f:
@@ -364,7 +336,6 @@ def evaluate_participant(
 
 
 def log_overall_metrics(all_results: list[dict], model_name: str, out_dir: str):
-    """Aggregate metrics across all participants and log as overall_ metrics."""
     total = len(all_results)
     errors = sum(1 for r in all_results if r["error"])
     amb = sum(1 for r in all_results if r.get("ambiguities_detected") is True)
@@ -383,7 +354,6 @@ def log_overall_metrics(all_results: list[dict], model_name: str, out_dir: str):
     print(f"\nOverall: {total} windows, {errors} errors, "
           f"{amb} with ambiguities, {face} with facial behaviour.")
 
-    # Save combined JSON
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     combined_path = os.path.join(out_dir, f"{model_name}_all_participants_{timestamp}.json")
     with open(combined_path, "w") as f:
@@ -409,20 +379,33 @@ def participant_id_from_path(csv_path: str) -> str:
     return folder.replace("_Data", "")
 
 
-def video_dir_from_csv_path(csv_path: str) -> str:
-    """Infer video directory from CSV path.
-    Looks for a 'video' or 'videos' subdirectory next to the CSV.
+def video_dir_from_participant_id(cropped_root: str, participant_id: str) -> str:
     """
-    parent = Path(csv_path).parent
-    for name in ["video", "videos"]:
-        candidate = parent / name
-        if candidate.exists():
-            return str(candidate)
-    raise RuntimeError(f"No video/videos directory found next to {csv_path}")
+    Locate the video directory for a participant under the cropped videos root.
+    Searches for a subfolder whose name contains the participant_id.
+    e.g. cropped_root/01_V_Data/video or cropped_root/01_V_Data/videos
+    """
+    cropped_root = Path(cropped_root)
+
+    for subdir in sorted(cropped_root.iterdir()):
+        if not subdir.is_dir():
+            continue
+        if participant_id in subdir.name:
+            for name in ["video", "videos"]:
+                candidate = subdir / name
+                if candidate.exists():
+                    return str(candidate)
+            # If no video/videos subfolder, use the participant folder directly
+            return str(subdir)
+
+    raise RuntimeError(
+        f"No cropped video directory found for participant '{participant_id}' under {cropped_root}"
+    )
 
 
 def run_vlm_evaluation(
-    root_dir: str,
+    csv_root_dir: str,
+    cropped_video_root: str,
     model_config_path: str,
     num_frames: int = 60,
     out_dir: str = "vlm_outputs",
@@ -430,13 +413,11 @@ def run_vlm_evaluation(
     save_frames: bool = True,
     contact_sheet_cols: int = 10,
     thumb_width: int = 160,
-    crop_offset_x: int = 0,
-    crop_offset_y: int = 0,
 ):
     os.makedirs(out_dir, exist_ok=True)
     models = load_model_configs(model_config_path)
 
-    csv_paths = dataset_directories(root_dir)
+    csv_paths = dataset_directories(csv_root_dir)
     participants = [(participant_id_from_path(p), p) for p in csv_paths]
 
     print("Found participants:")
@@ -468,16 +449,16 @@ def run_vlm_evaluation(
                 "temperature": model.get("temperature", 0.1),
                 "num_frames_per_window": num_frames,
                 "num_participants": len(participants),
-                "root_dir": root_dir,
+                "csv_root_dir": csv_root_dir,
+                "cropped_video_root": cropped_video_root,
                 "save_frames": save_frames,
-                "crop_offset_x": crop_offset_x,
-                "crop_offset_y": crop_offset_y,
             })
 
             for participant_id, csv_path in tqdm(participants, desc="Participants", leave=False):
                 print(f"\n  --- Participant: {participant_id} ---")
                 try:
-                    video_dir = video_dir_from_csv_path(csv_path)
+                    video_dir = video_dir_from_participant_id(cropped_video_root, participant_id)
+                    print(f"  Video dir: {video_dir}")
                     windows = load_windows_from_csv(csv_path, video_dir)
 
                     results = evaluate_participant(
@@ -491,8 +472,6 @@ def run_vlm_evaluation(
                         temperature=model.get("temperature", 0.1),
                         contact_sheet_cols=contact_sheet_cols,
                         thumb_width=thumb_width,
-                        crop_offset_x=crop_offset_x,
-                        crop_offset_y=crop_offset_y,
                         save_frames=save_frames,
                     )
                     all_results.extend(results)
@@ -508,7 +487,8 @@ def run_vlm_evaluation(
 
 if __name__ == "__main__":
     run_vlm_evaluation(
-        root_dir="/home/vanchha/Refined_Participants_Data",
+        csv_root_dir="/home/vanchha/Refined_Participants_Data",
+        cropped_video_root="/home/vanchha/llm_eval/Cropped_Videos",
         model_config_path="src/configs/vlm_model_config.toml",
         num_frames=60,
         out_dir="vlm_outputs",
@@ -516,6 +496,4 @@ if __name__ == "__main__":
         save_frames=True,
         contact_sheet_cols=10,
         thumb_width=160,
-        crop_offset_x=0,
-        crop_offset_y=0,
     )

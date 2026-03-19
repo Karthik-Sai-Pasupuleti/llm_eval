@@ -1,179 +1,299 @@
 #!/usr/bin/env python3
 """
 Build the final processed CSV from raw participant data.
-Recalculates ocular, blink, and HRV metrics using participant-specific baselines
-derived from the first 5 windows.
+raw_ear, raw_mar, raw_ppg, metric_BPM are read from the .h5 file.
+All other metrics and annotations are read from the CSV file.
+ 
+EAR baseline (first 5 windows):
+  - closed_threshold : min non-zero EAR (fully-closed eye floor)
+  - open_threshold   : mean EAR of non-blink frames (open-eye baseline)
+    Blink frames are identified as ±50ms around every local EAR minimum.
+ 
+All ocular metrics are recalculated using open_threshold as ear_threshold.
+Frames with EAR == 0 are undetected frames and treated the same as None.
 """
-
+ 
 import ast
 import numpy as np
 import pandas as pd
+import h5py
 import neurokit2 as nk
-
+ 
 # --- HARDCODED INPUT ---
-INPUT_CSV = "/home/vanchha/Refined_Participants_Data/01_V_Data/V_Data.csv"
-OUTPUT_CSV = "/home/vanchha/Refined_Participants_Data/01_V_Data/V_adaptive_threshold.csv"
-BASELINE_WINDOWS = 5
-FPS = 30  # camera frames per second, used for blink duration ms conversion
-
-
+INPUT_CSV  = "/home/vanchha/Refined_Participants_Data/02_MK_Data/MK_Data.csv"
+INPUT_H5   = "/home/vanchha/Refined_Participants_Data/02_MK_Data/session_data.h5"
+OUTPUT_CSV = "/home/vanchha/Refined_Participants_Data/02_MK_Data/MK_Data_final.csv"
+ 
+BASELINE_WINDOWS  = 5
+MIN_CONSEC_FRAMES = 0    # per specification
+PPG_SR            = 100  # PPG sampling rate in Hz
+ 
+ 
 # ---------------------------------------------------------------------------
-# Metric calculation helpers
+# H5 loader
 # ---------------------------------------------------------------------------
-
-def extract_baseline_ear(ear_arrays: list[np.ndarray]) -> float:
+ 
+def load_raw_signals_from_h5(h5_path: str) -> pd.DataFrame:
     """
-    From the first BASELINE_WINDOWS windows of raw_ear, find the minimum
-    non-zero value across all frames. This is the closed-eye (blink) threshold.
+    Load raw_ear, raw_mar, raw_ppg, metric_BPM from .h5 file.
+    Structure: window_N/raw_data/ear|mar|ppg|smooth_bpm
+    metric_BPM stored as deduplicated array string per window.
     """
-    all_values = np.concatenate(ear_arrays)
-    non_zero = all_values[all_values > 0]
-    return float(np.min(non_zero))
-
-
-def calculate_perclos(ear_array: np.ndarray, ear_threshold: float, min_consec_frames: int = 0) -> float:
+    records = []
+    with h5py.File(h5_path, "r") as f:
+        for window_key in f.keys():
+            raw_data = f[window_key]["raw_data"]
+            bpm_raw    = np.array(raw_data["smooth_bpm"])
+            bpm_unique = np.unique(bpm_raw)
+            bpm_unique = bpm_unique[bpm_unique > 0]
+            records.append({
+                "window_id":  int(window_key.replace("window_", "")),
+                "raw_ear":    np.array(raw_data["ear"]),
+                "raw_mar":    np.array(raw_data["mar"]),
+                "raw_ppg":    np.array(raw_data["ppg"]),
+                "metric_BPM": str(bpm_unique.tolist()),
+            })
+    return pd.DataFrame(records).sort_values("window_id").reset_index(drop=True)
+ 
+ 
+# ---------------------------------------------------------------------------
+# Baseline extraction
+# ---------------------------------------------------------------------------
+ 
+def extract_ear_thresholds(ear_arrays: list) -> tuple[float, float]:
     """
-    PERCLOS: fraction of frames where EAR is below threshold (eyes closed).
-    min_consec_frames: minimum consecutive frames to count as closure event (0 = no filter).
+    Derive participant-specific EAR thresholds from the first BASELINE_WINDOWS windows.
+ 
+    Steps:
+    1. Find local minima (non-zero) — blink valleys.
+    2. Mark ±50ms around each minimum as blink frames.
+    3. closed_threshold = min non-zero EAR across all baseline frames.
+    4. open_threshold   = mean EAR of non-blink, non-zero frames.
+ 
+    Returns:
+        closed_threshold : floor of a fully-closed eye
+        open_threshold   : open-eye baseline — used as ear_threshold in all metrics
     """
-    if len(ear_array) == 0:
+    all_nonzero    = []
+    open_eye_values = []
+ 
+    for ear_array in ear_arrays:
+        ear        = np.array(ear_array, dtype=float)
+        valid_mask = ear > 0
+        valid_vals = ear[valid_mask]
+        if len(valid_vals) == 0:
+            continue
+ 
+        fps      = len(valid_vals) / 60.0
+        half_win = max(1, round(0.05 * fps))  # 50ms in frames
+ 
+        # Mark blink frames: ±half_win around each local minimum
+        blink_mask = np.zeros(len(ear), dtype=bool)
+        for i in range(1, len(ear) - 1):
+            if ear[i] <= 0:
+                continue
+            if ear[i] < ear[i - 1] and ear[i] < ear[i + 1]:
+                start = max(0, i - half_win)
+                end   = min(len(ear), i + half_win + 1)
+                blink_mask[start:end] = True
+ 
+        all_nonzero.extend(valid_vals.tolist())
+        open_frames = ear[valid_mask & ~blink_mask]
+        open_eye_values.extend(open_frames.tolist())
+ 
+    closed_threshold = float(np.min(all_nonzero)) if all_nonzero else 0.0
+ 
+    if open_eye_values:
+        open_threshold = float(np.mean(open_eye_values))
+    else:
+        open_threshold = float(np.mean(all_nonzero)) if all_nonzero else 0.0
+ 
+    return closed_threshold, open_threshold
+ 
+ 
+# ---------------------------------------------------------------------------
+# Metric calculation
+# ---------------------------------------------------------------------------
+ 
+def _is_valid(ear) -> bool:
+    """Frame is valid if it is not None and not zero (undetected)."""
+    return ear is not None and ear > 0
+ 
+ 
+def calculate_perclos(ear_values, ear_threshold: float, min_consec_frames: int) -> float:
+    """
+    PERCLOS: % of valid frames in contiguous runs >= min_consec_frames
+    where EAR < ear_threshold.  Returns 0–100.
+    Zero-valued frames are treated as undetected (excluded).
+    """
+    closed_frames = 0
+    consec_count  = 0
+ 
+    for ear in ear_values:
+        if _is_valid(ear):
+            if ear < ear_threshold:
+                consec_count += 1
+            else:
+                if consec_count >= min_consec_frames:
+                    closed_frames += consec_count
+                consec_count = 0
+        else:
+            if consec_count >= min_consec_frames:
+                closed_frames += consec_count
+            consec_count = 0
+ 
+    if consec_count >= min_consec_frames:
+        closed_frames += consec_count
+ 
+    total_frames = sum(_is_valid(e) for e in ear_values)
+    if total_frames == 0:
         return 0.0
-    below = ear_array < ear_threshold
-    if min_consec_frames <= 1:
-        return float(np.mean(below))
-    # count only runs >= min_consec_frames
-    closed_count = 0
-    run = 0
-    for val in below:
-        if val:
-            run += 1
-        else:
-            if run >= min_consec_frames:
-                closed_count += run
-            run = 0
-    if run >= min_consec_frames:
-        closed_count += run
-    return float(closed_count / len(ear_array))
-
-
-def calculate_blink_stats_all(ear_array: np.ndarray, ear_threshold: float) -> tuple[float, float, float]:
+    return (closed_frames / total_frames) * 100.0
+ 
+ 
+def calculate_blink_stats_all(ear_values, ear_threshold: float) -> tuple[float, float, float]:
     """
-    Returns (blink_duration_mean_ms, blink_duration_std_ms, blink_duration_max_ms).
-    A blink is a contiguous run of frames where EAR < ear_threshold.
-    Duration is converted to ms assuming FPS.
+    Blink duration stats. A blink = contiguous run of valid frames where EAR < ear_threshold.
+    FPS derived dynamically from valid frame count over 60s window.
+    Returns (mean_s, std_s, max_s).
     """
-    durations = []
-    run = 0
-    for val in ear_array:
-        if val < ear_threshold:
-            run += 1
-        else:
-            if run > 0:
-                durations.append(run)
-            run = 0
-    if run > 0:
-        durations.append(run)
-
-    if not durations:
+    total_frames = sum(_is_valid(e) for e in ear_values)
+    if total_frames == 0:
         return 0.0, 0.0, 0.0
-
-    durations_ms = [d * (1000.0 / FPS) for d in durations]
-    return float(np.mean(durations_ms)), float(np.std(durations_ms)), float(np.max(durations_ms))
-
-
-def calculate_blink_rate(ear_array: np.ndarray, ear_threshold: float, window_duration_s: float = 60.0) -> float:
+ 
+    fps             = total_frames / 60.0
+    blink_durations = []
+    consec_count    = 0
+ 
+    for ear in ear_values:
+        if _is_valid(ear):
+            if ear < ear_threshold:
+                consec_count += 1
+            else:
+                if consec_count > 0:
+                    blink_durations.append(consec_count / fps)
+                    consec_count = 0
+        else:
+            if consec_count > 0:
+                blink_durations.append(consec_count / fps)
+                consec_count = 0
+ 
+    if consec_count > 0:
+        blink_durations.append(consec_count / fps)
+ 
+    if not blink_durations:
+        return 0.0, 0.0, 0.0
+ 
+    return (
+        float(np.mean(blink_durations)),
+        float(np.std(blink_durations)),
+        float(np.max(blink_durations)),
+    )
+ 
+ 
+def calculate_blink_rate(ear_values, ear_threshold: float) -> float:
     """
-    Blink rate = number of blink events per minute.
+    Blink events per minute.
+    A blink event starts when EAR drops below ear_threshold (from above).
+    Zero / undetected frames reset the in_blink state.
+    Window is 60s so blink_count == blinks per minute directly.
     """
+    total_frames = sum(_is_valid(e) for e in ear_values)
+    if total_frames == 0:
+        return 0.0
+ 
     blink_count = 0
-    in_blink = False
-    for val in ear_array:
-        if val < ear_threshold and not in_blink:
+    in_blink    = False
+ 
+    for ear in ear_values:
+        if not _is_valid(ear):
+            in_blink = False
+        elif ear < ear_threshold and not in_blink:
             blink_count += 1
             in_blink = True
-        elif val >= ear_threshold:
+        elif ear >= ear_threshold:
             in_blink = False
-    return float(blink_count / (window_duration_s / 60.0))
-
-
-def calculate_hrv_features(ppg_array: np.ndarray, sampling_rate: int = 100) -> dict:
-    """
-    Use neurokit2 to compute HRV features from raw PPG signal.
-    Returns a flat dict of HRV metrics; returns NaNs on failure.
-    """
-    nan_result = {
-        "hrv_sdnn": np.nan, "hrv_rmssd": np.nan, "hrv_sd1": np.nan,
-        "hrv_hf": np.nan, "hrv_wavelet_entropy": np.nan, "hrv_lfhf": np.nan,
-        "metric_BPM_hrv": np.nan,
-    }
+ 
+    return float(blink_count)
+ 
+ 
+def calculate_hrv_features(ppg_array, sampling_rate: int = PPG_SR) -> dict:
+    """Compute all neurokit2 HRV features from raw PPG. Returns {} on failure."""
     try:
-        signals, info = nk.ppg_process(ppg_array, sampling_rate=sampling_rate)
+        signals, _ = nk.ppg_process(ppg_array, sampling_rate=sampling_rate)
         hrv = nk.hrv(signals, sampling_rate=sampling_rate, show=False)
-        return {
-            "hrv_sdnn": float(hrv["HRV_SDNN"].iloc[0]) if "HRV_SDNN" in hrv else np.nan,
-            "hrv_rmssd": float(hrv["HRV_RMSSD"].iloc[0]) if "HRV_RMSSD" in hrv else np.nan,
-            "hrv_sd1": float(hrv["HRV_SD1"].iloc[0]) if "HRV_SD1" in hrv else np.nan,
-            "hrv_hf": float(hrv["HRV_HF"].iloc[0]) if "HRV_HF" in hrv else np.nan,
-            "hrv_wavelet_entropy": float(hrv["HRV_WE"].iloc[0]) if "HRV_WE" in hrv else np.nan,
-            "hrv_lfhf": float(hrv["HRV_LFHF"].iloc[0]) if "HRV_LFHF" in hrv else np.nan,
-        }
-    except Exception:
-        return nan_result
-
-
+        return {col: float(hrv[col].iloc[0]) for col in hrv.columns}
+    except Exception as e:
+        print(f"  HRV failed: {e}")
+        return {}
+ 
+ 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-
-def build_final_csv(input_csv: str, output_csv: str):
+ 
+def build_final_csv(input_csv: str, input_h5: str, output_csv: str):
     df = pd.read_csv(input_csv)
-
-    # Parse array columns stored as strings
-    for col in ["raw_ear", "raw_mar", "raw_ppg", "metric_BPM"]:
-        if col in df.columns:
-            df[col] = df[col].apply(ast.literal_eval)
-
-    # --- drive_duration from initial_timestamp ---
-    # Each window is 60s; duration = last_timestamp - first_timestamp within window
-    # initial_timestamp is the first frame UNIX timestamp of the window
-    # If a dedicated last_timestamp column exists use it, else approximate from FPS
-    if "last_timestamp" in df.columns:
-        df["drive_duration"] = df["last_timestamp"] - df["initial_timestamp"]
-    else:
-        # Approximate: window duration = len(raw_ear) / FPS
-        df["drive_duration"] = df["raw_ear"].apply(lambda x: len(x) / FPS)
-
-    # --- Participant-specific baseline from first BASELINE_WINDOWS windows ---
-    baseline_df = df.iloc[:BASELINE_WINDOWS]
-    ear_threshold = extract_baseline_ear(baseline_df["raw_ear"].tolist())
-    mar_baseline = float(np.mean(np.concatenate(baseline_df["raw_mar"].tolist())))
-    bpm_baseline = float(np.mean([np.mean(arr) for arr in baseline_df["metric_BPM"].tolist()]))
-    ppg_baseline_mean = float(np.mean(np.concatenate(baseline_df["raw_ppg"].tolist())))
-
-    print(f"Baselines -> EAR threshold: {ear_threshold:.4f} | MAR neutral: {mar_baseline:.4f} | "
-          f"BPM neutral: {bpm_baseline:.2f} | PPG mean: {ppg_baseline_mean:.4f}")
-
-    # --- Recalculate ocular metrics using baseline EAR threshold ---
+ 
+    # Drop raw signal columns from CSV — all come from h5
+    drop_cols = ["raw_ear", "raw_mar", "raw_ppg", "metric_BPM"]
+    df = df.drop(columns=[c for c in drop_cols if c in df.columns])
+ 
+    # Load raw signals from h5 and merge
+    h5_df = load_raw_signals_from_h5(input_h5)
+    df    = df.merge(h5_df, on="window_id", how="left")
+    print(f"Loaded {len(df)} windows after merge.")
+ 
+    # drive_duration: elapsed seconds since session start
+    df["drive_duration"] = df["initial_timestamp"] - df["initial_timestamp"].iloc[0]
+ 
+    # --- Participant-specific baselines from first BASELINE_WINDOWS windows ---
+    baseline_rows = df.iloc[:BASELINE_WINDOWS]
+ 
+    closed_threshold, open_threshold = extract_ear_thresholds(baseline_rows["raw_ear"].tolist())
+ 
+    mar_baseline = float(np.mean(np.concatenate(
+        [np.array(x, dtype=float) for x in baseline_rows["raw_mar"]]
+    )))
+    bpm_baseline = float(np.mean([
+        np.mean(ast.literal_eval(v)) for v in baseline_rows["metric_BPM"]
+    ]))
+    ppg_baseline_mean = float(np.mean(np.concatenate(
+        [np.array(x, dtype=float) for x in baseline_rows["raw_ppg"]]
+    )))
+ 
+    # Midpoint between fully-closed floor and open-eye baseline
+    ear_threshold = (closed_threshold + open_threshold) / 2.0
+ 
+    print(
+        f"Baselines -> EAR closed: {closed_threshold:.4f} | EAR open: {open_threshold:.4f} | "
+        f"EAR threshold (mid): {ear_threshold:.4f} | "
+        f"MAR neutral: {mar_baseline:.4f} | BPM neutral: {bpm_baseline:.2f} | "
+        f"PPG mean: {ppg_baseline_mean:.4f}"
+    )
+ 
+    # --- Recalculate ocular metrics ---
     df["metric_PERCLOS"] = df["raw_ear"].apply(
-        lambda x: calculate_perclos(np.array(x), ear_threshold=ear_threshold, min_consec_frames=0)
+        lambda x: calculate_perclos(x, ear_threshold, MIN_CONSEC_FRAMES)
     )
     df[["blink_duration_mean", "blink_duration_std", "blink_duration_max"]] = df["raw_ear"].apply(
-        lambda x: pd.Series(calculate_blink_stats_all(np.array(x), ear_threshold=ear_threshold))
+        lambda x: pd.Series(calculate_blink_stats_all(x, ear_threshold))
     )
     df["metric_BlinkRate"] = df["raw_ear"].apply(
-        lambda x: calculate_blink_rate(np.array(x), ear_threshold=ear_threshold)
+        lambda x: calculate_blink_rate(x, ear_threshold)
     )
-
-    # --- HRV from raw_ppg via neurokit2 ---
-    hrv_rows = df["raw_ppg"].apply(lambda x: pd.Series(calculate_hrv_features(np.array(x))))
-    for col in hrv_rows.columns:
+ 
+    # --- HRV from raw_ppg ---
+    print("Computing HRV features (this may take a moment)...")
+    hrv_rows = df["raw_ppg"].apply(
+        lambda x: pd.Series(calculate_hrv_features(np.array(x, dtype=float)))
+    ).fillna(np.nan)
+    hrv_cols = list(hrv_rows.columns)
+    for col in hrv_cols:
         df[col] = hrv_rows[col]
-
-    # --- metric_BPM: take mean of the per-window BPM array ---
-    df["metric_BPM"] = df["metric_BPM"].apply(lambda x: float(np.mean(x)))
-
-    # --- Select and order final columns ---
-    final_cols = [
+ 
+    # --- Final column ordering (raw signals kept as columns 20–22) ---
+    base_cols = [
         "initial_timestamp", "window_id", "video", "participant_id",
         "Annotator_1", "Annotator_2", "Annotator_1_Notes", "Annotator_2_Notes",
         "drive_duration",
@@ -183,14 +303,14 @@ def build_final_csv(input_csv: str, output_csv: str):
         "metric_BPM",
         "raw_ear", "raw_mar", "raw_ppg",
     ]
-    # Keep only columns that exist in df
-    final_cols = [c for c in final_cols if c in df.columns]
+    final_cols = [c for c in base_cols if c in df.columns] + hrv_cols
     df = df[final_cols]
-
+ 
     df.to_csv(output_csv, index=False)
-    print(f"Final CSV saved to: {output_csv}")
-    print(f"Shape: {df.shape}")
-
-
+    print(f"Saved → {output_csv}  |  shape: {df.shape}  |  HRV features: {len(hrv_cols)}")
+ 
+ 
 if __name__ == "__main__":
-    build_final_csv(INPUT_CSV, OUTPUT_CSV)
+    build_final_csv(INPUT_CSV, INPUT_H5, OUTPUT_CSV)
+ 
+ 
