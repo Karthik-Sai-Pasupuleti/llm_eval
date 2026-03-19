@@ -24,6 +24,8 @@ dependencies = [
     "seaborn>=0.13.2",
     "langchain-community>=0.4.1",
     "toml>=0.10.2",
+    "opencv-python>=4.9",
+    "ollama>=0.2",
 ]
 
 [build-system]
