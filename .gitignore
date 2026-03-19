@@ -19,3 +19,6 @@ mlruns/
 *.env
 *.log
 vlm_outputs/
+crop_preview.jpg
+src/notebooks/prompt.md
+src/vlm_eval/crop.py
