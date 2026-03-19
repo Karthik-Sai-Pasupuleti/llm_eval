@@ -18,3 +18,4 @@ mlruns/
 .env
 *.env
 *.log
+vlm_outputs/
