@@ -1,102 +1,160 @@
 #!/usr/bin/env python3
 """
-PCA analysis on the final processed CSV.
-Plots 2D visualization colored by Annotator_1 drowsiness label,
-and prints the most important features per principal component.
+Simple PCA on the final CSV metrics.
+ 
+Outputs:
+  - pca_2d.png                  : 2D scatter plot coloured by Annotator_1 drowsiness label
+  - pca_variance.png            : explained variance bar chart
+  - explained_variance.csv      : variance and cumulative variance per PC
+  - pca_loadings_matrix.csv     : full feature vs PC loadings matrix
+  - feature_importance_per_pc.csv : features ranked by absolute loading for each PC
+  - pca_transformed_data.csv    : the transformed dataset including identifiers and labels
+  - Console                     : top features per principal component (all PCs)
 """
-
+ 
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-
-# --- HARDCODED INPUT ---
-INPUT_CSV = "/home/karthik/Desktop/llm_eval/Refined_Participants_Data/01_V_Data/V_Data_final.csv"
-OUTPUT_PLOT = "pca_2d_visualization.png"
-OUTPUT_LOADINGS = "pca_loadings.csv"
-
-NUMERIC_FEATURES = [
-    "metric_PERCLOS", "metric_BlinkRate",
-    "blink_duration_mean", "blink_duration_std", "blink_duration_max",
-    "metric_YawnRate", "metric_Entropy", "metric_SteeringRate",
-    "metric_SDLP", "metric_BPM",
+ 
+INPUT_CSV = "/home/vanchha/Refined_Participants_Data/02_MK_Data/MK_Data_final.csv"
+OUTPUT_DIR = "/home/vanchha/Refined_Participants_Data/02_MK_Data/PCA"
+ 
+# Columns to exclude from PCA (non-numeric, identifiers, raw signals, annotations)
+EXCLUDE_COLS = [
+    "initial_timestamp", "window_id", "video", "participant_id",
+    "Annotator_1", "Annotator_2", "Annotator_1_Notes", "Annotator_2_Notes",
+    "raw_ear", "raw_mar", "raw_ppg", "metric_BPM",
+    "drive_duration",
 ]
-LABEL_COL = "Annotator_1"
-TOP_N_FEATURES = 3  # top features to print per PC
-
-
-def run_pca(input_csv: str):
+ 
+LABEL_COL  = "Annotator_1"
+N_TOP      = 5   # top features to print per PC
+ 
+ 
+def run_pca(input_csv: str, output_dir: str):
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
     df = pd.read_csv(input_csv)
-
-    # Drop rows with missing features or label
-    features = [f for f in NUMERIC_FEATURES if f in df.columns]
-    df = df.dropna(subset=features + [LABEL_COL])
-
-    X = df[features].values
-    y = df[LABEL_COL].values
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
+ 
+    # Keep only rows with a valid label
+    if LABEL_COL in df.columns:
+        df = df[df[LABEL_COL].notna()].reset_index(drop=True)
+        labels = df[LABEL_COL].astype(str)
+    else:
+        labels = None
+ 
+    # Build feature matrix
+    feature_df = df.drop(columns=[c for c in EXCLUDE_COLS if c in df.columns], errors="ignore")
+    feature_df = feature_df.select_dtypes(include=[np.number])
+    feature_df = feature_df.dropna(axis=1, how="all")
+    feature_df = feature_df.fillna(feature_df.median())
+ 
+    feature_names = feature_df.columns.tolist()
+    print(f"Features used for PCA: {len(feature_names)}")
+ 
+    X = StandardScaler().fit_transform(feature_df)
     pca = PCA()
-    X_pca = pca.fit_transform(X_scaled)
+    X_pca = pca.fit_transform(X)
+    
+    pc_columns = [f"PC{i+1}" for i in range(len(pca.components_))]
+ 
+    # --- 1. Export Explained Variance ---
+    cumvar = np.cumsum(pca.explained_variance_ratio_)
+    exp_var_df = pd.DataFrame({
+        "Principal_Component": pc_columns,
+        "Explained_Variance_Ratio": pca.explained_variance_ratio_,
+        "Cumulative_Variance_Ratio": cumvar
+    })
+    exp_var_path = os.path.join(output_dir, "explained_variance.csv")
+    exp_var_df.to_csv(exp_var_path, index=False)
+    print(f"Saved: {exp_var_path}")
 
-    # --- Explained variance ---
-    explained = pca.explained_variance_ratio_
-    cumulative = np.cumsum(explained)
-    print("\nExplained variance per PC:")
-    for i, (ev, cv) in enumerate(zip(explained, cumulative)):
-        print(f"  PC{i+1}: {ev*100:.2f}%  (cumulative: {cv*100:.2f}%)")
+    # --- 2. Export PCA Loadings Matrix ---
+    loadings_df = pd.DataFrame(pca.components_.T, index=feature_names, columns=pc_columns)
+    loadings_path = os.path.join(output_dir, "pca_loadings_matrix.csv")
+    loadings_df.to_csv(loadings_path, index=True, index_label="Feature")
+    print(f"Saved: {loadings_path}")
 
-    # --- Loadings: most important features per PC ---
-    loadings = pd.DataFrame(
-        pca.components_.T,
-        index=features,
-        columns=[f"PC{i+1}" for i in range(len(features))]
-    )
-    loadings.to_csv(OUTPUT_LOADINGS)
-    print(f"\nLoadings saved to: {OUTPUT_LOADINGS}")
+    # --- 3. Export Feature Importance Per PC ---
+    imp_records = []
+    for i, component in enumerate(pca.components_):
+        sorted_idx = np.argsort(np.abs(component))[::-1]
+        for rank, idx in enumerate(sorted_idx):
+            imp_records.append({
+                "PC": f"PC{i+1}",
+                "Rank": rank + 1,
+                "Feature": feature_names[idx],
+                "Loading": component[idx],
+                "Absolute_Loading": np.abs(component[idx])
+            })
+    feat_imp_df = pd.DataFrame(imp_records)
+    feat_imp_path = os.path.join(output_dir, "feature_importance_per_pc.csv")
+    feat_imp_df.to_csv(feat_imp_path, index=False)
+    print(f"Saved: {feat_imp_path}")
 
-    print(f"\nTop {TOP_N_FEATURES} features per principal component:")
-    for col in loadings.columns:
-        top = loadings[col].abs().nlargest(TOP_N_FEATURES)
-        print(f"  {col}: {', '.join(top.index.tolist())}")
-
-    # --- 2D visualization (PC1 vs PC2) ---
-    labels = np.unique(y)
-    colors = plt.cm.Set1(np.linspace(0, 0.8, len(labels)))
-
-    fig, ax = plt.subplots(figsize=(9, 7))
-    for label, color in zip(labels, colors):
-        mask = y == label
-        ax.scatter(X_pca[mask, 0], X_pca[mask, 1],
-                   label=str(label), color=color, alpha=0.7, edgecolors="k", linewidths=0.4, s=60)
-
-    ax.set_xlabel(f"PC1 ({explained[0]*100:.1f}% variance)")
-    ax.set_ylabel(f"PC2 ({explained[1]*100:.1f}% variance)")
-    ax.set_title("PCA 2D Visualization — Drowsiness Labels")
-    ax.legend(title=LABEL_COL)
-    ax.grid(True, linestyle="--", alpha=0.4)
+    # --- 4. Export Transformed Data ---
+    transformed_df = pd.DataFrame(X_pca, columns=pc_columns)
+    if labels is not None:
+        transformed_df[LABEL_COL] = labels.values
+    
+    # Prepend key identifiers to the transformed data if they exist in the original dataframe
+    for col in reversed(["initial_timestamp", "window_id", "participant_id", "video"]):
+        if col in df.columns:
+            transformed_df.insert(0, col, df[col].values)
+            
+    transformed_path = os.path.join(output_dir, "pca_transformed_data.csv")
+    transformed_df.to_csv(transformed_path, index=False)
+    print(f"Saved: {transformed_path}")
+ 
+    # --- 2D scatter coloured by label ---
+    fig, ax = plt.subplots(figsize=(10, 7))
+    if labels is not None:
+        for label in sorted(labels.unique()):
+            mask = labels == label
+            ax.scatter(X_pca[mask, 0], X_pca[mask, 1], label=label, alpha=0.7, s=40)
+        ax.legend(title=LABEL_COL, loc="best")
+    else:
+        ax.scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.7, s=40)
+ 
+    ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
+    ax.set_title("PCA 2D Visualization")
     plt.tight_layout()
-    plt.savefig(OUTPUT_PLOT, dpi=150)
-    plt.close()
-    print(f"\n2D plot saved to: {OUTPUT_PLOT}")
-
-    # --- Scree plot ---
-    fig2, ax2 = plt.subplots(figsize=(7, 4))
-    ax2.bar(range(1, len(explained) + 1), explained * 100, color="steelblue", alpha=0.8)
-    ax2.plot(range(1, len(explained) + 1), cumulative * 100, color="red", marker="o", label="Cumulative")
-    ax2.set_xlabel("Principal Component")
-    ax2.set_ylabel("Explained Variance (%)")
-    ax2.set_title("Scree Plot")
-    ax2.legend()
-    ax2.grid(True, linestyle="--", alpha=0.4)
+    
+    pca_2d_path = os.path.join(output_dir, "pca_2d.png")
+    plt.savefig(pca_2d_path, dpi=150)
+    plt.show()
+    print(f"Saved: {pca_2d_path}")
+ 
+    # --- Explained variance bar chart ---
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(range(1, len(pca.explained_variance_ratio_) + 1), pca.explained_variance_ratio_)
+    ax.set_xlabel("Principal Component")
+    ax.set_ylabel("Explained Variance Ratio")
+    ax.set_title("Explained Variance per PC")
     plt.tight_layout()
-    plt.savefig("pca_scree_plot.png", dpi=150)
-    plt.close()
-    print("Scree plot saved to: pca_scree_plot.png")
-
-
+    
+    pca_variance_path = os.path.join(output_dir, "pca_variance.png")
+    plt.savefig(pca_variance_path, dpi=150)
+    plt.show()
+    print(f"Saved: {pca_variance_path}")
+ 
+    # --- Console outputs ---
+    print(f"\nPCs to reach 95% variance: {np.argmax(cumvar >= 0.95) + 1}")
+    print(f"PC1 + PC2 cumulative variance: {cumvar[1] * 100:.1f}%\n")
+ 
+    print(f"Top {N_TOP} features per principal component:")
+    print("=" * 60)
+    for i, component in enumerate(pca.components_):
+        top_idx = np.argsort(np.abs(component))[::-1][:N_TOP]
+        print(f"\nPC{i + 1}  (explains {pca.explained_variance_ratio_[i] * 100:.1f}%):")
+        for j in top_idx:
+            print(f"  {feature_names[j]:<45}  loading = {component[j]:+.4f}")
+ 
+ 
 if __name__ == "__main__":
-    run_pca(INPUT_CSV)
+    run_pca(INPUT_CSV, OUTPUT_DIR)
