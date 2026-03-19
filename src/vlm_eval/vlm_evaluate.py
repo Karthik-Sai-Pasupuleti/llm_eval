@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
 VLM evaluation pipeline for driver drowsiness video windows.
-Reads window metadata from the same CSV used in LLM eval.
-Matches each row to a video file via the 'video' column.
-Extracts 60 frames per window (1 fps equivalent), center-crops to half resolution.
+Cycles through all participants under a root directory.
+One MLflow experiment per model, covering all participants sequentially.
 Sends a single collaged image per window to the VLM for ambiguity and facial behaviour detection.
 Individual frames are saved separately to MLflow for human observer review.
-Results are logged to MLflow.
 """
 
 import os
@@ -87,7 +85,6 @@ def center_crop_half(
     return frame[top:top + new_h, left:left + new_w]
 
 
-
 def frame_to_base64(frame: np.ndarray) -> str:
     _, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
     return base64.b64encode(buffer).decode("utf-8")
@@ -98,10 +95,6 @@ def build_contact_sheet(
     cols: int = 10,
     thumb_width: int = 160,
 ) -> np.ndarray:
-    """
-    Build a contact sheet grid from frames with frame_id labels.
-    Returns the grid as a numpy array.
-    """
     thumbs = []
     for frame_id, f in enumerate(frames):
         h, w = f.shape[:2]
@@ -128,10 +121,6 @@ def save_individual_frames(
     out_dir: str,
     highlight_frame_ids: set = None,
 ):
-    """
-    Save each frame as a separate JPEG named by frame_id.
-    Highlighted frames (detections) get a red border.
-    """
     highlight_frame_ids = highlight_frame_ids or set()
     os.makedirs(out_dir, exist_ok=True)
 
@@ -179,9 +168,6 @@ def query_vlm(
     cols: int = 10,
     thumb_width: int = 160,
 ) -> dict:
-    """
-    Build a single contact sheet from all frames and send it to the VLM in one call.
-    """
     client = OllamaClient(host=OLLAMA_HOST)
 
     collage = build_contact_sheet(frames, cols=cols, thumb_width=thumb_width)
@@ -240,15 +226,203 @@ def load_windows_from_csv(csv_path: str, video_dir: str) -> list[dict]:
 
     found = sum(1 for w in windows if w["video_path"] is not None)
     missing = len(windows) - found
-    print(f"Matched {found}/{len(windows)} videos. {missing} missing.")
+    print(f"  Matched {found}/{len(windows)} videos. {missing} missing.")
 
     return windows
 
 
+def evaluate_participant(
+    participant_id: str,
+    windows: list[dict],
+    model_id: str,
+    model_name: str,
+    out_dir: str,
+    frames_base_dir: str,
+    num_frames: int,
+    temperature: float,
+    contact_sheet_cols: int,
+    thumb_width: int,
+    crop_offset_x: int,
+    crop_offset_y: int,
+    save_frames: bool,
+) -> list[dict]:
+    """
+    Run VLM inference on all windows for one participant.
+    Logs per-participant metrics and artifacts to the active MLflow run.
+    Returns list of result dicts.
+    """
+    results = []
+
+    for window in tqdm(windows, desc=f"  Windows [{participant_id}]", leave=False):
+        if window["video_path"] is None:
+            results.append({
+                "participant_id": participant_id,
+                "window_id": window["window_id"],
+                "video_name": window["video_name"],
+                "drowsiness_level": window["drowsiness_level"],
+                "ambiguities_detected": None,
+                "ambiguity_frame_ids": [],
+                "ambiguity_types": [],
+                "facial_behaviour_detected": None,
+                "facial_behaviour_frame_ids": [],
+                "facial_behaviours": [],
+                "description": None,
+                "confidence": None,
+                "error": "Video file not found",
+            })
+            continue
+
+        try:
+            frames = extract_frames(window["video_path"], num_frames=num_frames)
+            if not frames:
+                raise RuntimeError("No frames extracted.")
+
+            cropped_frames = [
+                center_crop_half(f, offset_x=crop_offset_x, offset_y=crop_offset_y)
+                for f in frames
+            ]
+
+            output = query_vlm(
+                model_id=model_id,
+                frames=cropped_frames,
+                temperature=temperature,
+                cols=contact_sheet_cols,
+                thumb_width=thumb_width,
+            )
+            output["participant_id"] = participant_id
+            output["window_id"] = window["window_id"]
+            output["video_name"] = window["video_name"]
+            output["drowsiness_level"] = window["drowsiness_level"]
+            output["error"] = None
+
+            if save_frames:
+                highlight_ids = set(
+                    output.get("ambiguity_frame_ids", []) +
+                    output.get("facial_behaviour_frame_ids", [])
+                )
+                window_frames_dir = os.path.join(
+                    frames_base_dir,
+                    participant_id,
+                    f"window_{window['window_id']}"
+                )
+                save_individual_frames(
+                    cropped_frames,
+                    window_frames_dir,
+                    highlight_frame_ids=highlight_ids,
+                )
+                mlflow.log_artifacts(
+                    window_frames_dir,
+                    artifact_path=f"frames/{participant_id}/window_{window['window_id']}"
+                )
+
+        except Exception as e:
+            output = {
+                "participant_id": participant_id,
+                "window_id": window["window_id"],
+                "video_name": window["video_name"],
+                "drowsiness_level": window["drowsiness_level"],
+                "ambiguities_detected": None,
+                "ambiguity_frame_ids": [],
+                "ambiguity_types": [],
+                "facial_behaviour_detected": None,
+                "facial_behaviour_frame_ids": [],
+                "facial_behaviours": [],
+                "description": None,
+                "confidence": None,
+                "error": str(e),
+            }
+
+        results.append(output)
+
+    # Log per-participant metrics to active MLflow run
+    total = len(results)
+    errors = sum(1 for r in results if r["error"])
+    amb = sum(1 for r in results if r.get("ambiguities_detected") is True)
+    face = sum(1 for r in results if r.get("facial_behaviour_detected") is True)
+    processed = total - errors
+
+    mlflow.log_metrics({
+        f"{participant_id}_total_windows": total,
+        f"{participant_id}_errors": errors,
+        f"{participant_id}_windows_with_ambiguities": amb,
+        f"{participant_id}_windows_with_facial_behaviour": face,
+        f"{participant_id}_ambiguity_rate": amb / max(processed, 1),
+        f"{participant_id}_facial_behaviour_rate": face / max(processed, 1),
+    })
+
+    # Save per-participant JSON artifact
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{model_name}_{participant_id}_results.json")
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2)
+    mlflow.log_artifact(out_path)
+
+    print(f"  [{participant_id}] {total} windows, {errors} errors, "
+          f"{amb} with ambiguities, {face} with facial behaviour.")
+
+    return results
+
+
+def log_overall_metrics(all_results: list[dict], model_name: str, out_dir: str):
+    """Aggregate metrics across all participants and log as overall_ metrics."""
+    total = len(all_results)
+    errors = sum(1 for r in all_results if r["error"])
+    amb = sum(1 for r in all_results if r.get("ambiguities_detected") is True)
+    face = sum(1 for r in all_results if r.get("facial_behaviour_detected") is True)
+    processed = total - errors
+
+    mlflow.log_metrics({
+        "overall_total_windows": total,
+        "overall_errors": errors,
+        "overall_windows_with_ambiguities": amb,
+        "overall_windows_with_facial_behaviour": face,
+        "overall_ambiguity_rate": amb / max(processed, 1),
+        "overall_facial_behaviour_rate": face / max(processed, 1),
+    })
+
+    print(f"\nOverall: {total} windows, {errors} errors, "
+          f"{amb} with ambiguities, {face} with facial behaviour.")
+
+    # Save combined JSON
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    combined_path = os.path.join(out_dir, f"{model_name}_all_participants_{timestamp}.json")
+    with open(combined_path, "w") as f:
+        json.dump(all_results, f, indent=2)
+    mlflow.log_artifact(combined_path)
+
+
+def dataset_directories(root_dir: str) -> list[str]:
+    """Recursively find all CSV files ending with 'Data.csv' under root_dir."""
+    dataset_list = []
+    for subdir, _, files in os.walk(root_dir):
+        for file in files:
+            if file.endswith("Data.csv"):
+                dataset_list.append(os.path.join(subdir, file))
+    return sorted(dataset_list)
+
+
+def participant_id_from_path(csv_path: str) -> str:
+    """Extract participant identifier from CSV path.
+    e.g. '.../01_V_Data/V_Data.csv' -> '01_V'
+    """
+    folder = os.path.basename(os.path.dirname(csv_path))
+    return folder.replace("_Data", "")
+
+
+def video_dir_from_csv_path(csv_path: str) -> str:
+    """Infer video directory from CSV path.
+    Looks for a 'video' or 'videos' subdirectory next to the CSV.
+    """
+    parent = Path(csv_path).parent
+    for name in ["video", "videos"]:
+        candidate = parent / name
+        if candidate.exists():
+            return str(candidate)
+    raise RuntimeError(f"No video/videos directory found next to {csv_path}")
+
 
 def run_vlm_evaluation(
-    csv_path: str,
-    video_dir: str,
+    root_dir: str,
     model_config_path: str,
     num_frames: int = 60,
     out_dir: str = "vlm_outputs",
@@ -256,15 +430,18 @@ def run_vlm_evaluation(
     save_frames: bool = True,
     contact_sheet_cols: int = 10,
     thumb_width: int = 160,
-    crop_offset_x: int = 0,      
+    crop_offset_x: int = 0,
     crop_offset_y: int = 0,
 ):
     os.makedirs(out_dir, exist_ok=True)
     models = load_model_configs(model_config_path)
-    windows = load_windows_from_csv(csv_path, video_dir)
 
-    if not windows:
-        raise RuntimeError("No windows loaded from CSV.")
+    csv_paths = dataset_directories(root_dir)
+    participants = [(participant_id_from_path(p), p) for p in csv_paths]
+
+    print("Found participants:")
+    for pid, path in participants:
+        print(f"  {pid}: {path}")
 
     existing_experiments = {
         exp.name: exp.experiment_id for exp in mlflow.search_experiments()
@@ -279,127 +456,59 @@ def run_vlm_evaluation(
             print(f"Experiment '{experiment_name}' already exists — skipping.")
             continue
 
-        print(f"Evaluating {experiment_name} ({model['model_id']})")
+        print(f"Evaluating {experiment_name} ({model['model_id']}) across {len(participants)} participants")
         mlflow.set_experiment(experiment_name)
 
-        results = []
         frames_base_dir = os.path.join(out_dir, f"{model_name}_frames")
+        all_results = []
 
         with mlflow.start_run(run_name=experiment_name):
             mlflow.log_params({
                 "model_id": model["model_id"],
                 "temperature": model.get("temperature", 0.1),
                 "num_frames_per_window": num_frames,
-                "total_windows": len(windows),
-                "csv_path": csv_path,
-                "video_dir": video_dir,
+                "num_participants": len(participants),
+                "root_dir": root_dir,
                 "save_frames": save_frames,
+                "crop_offset_x": crop_offset_x,
+                "crop_offset_y": crop_offset_y,
             })
 
-            for window in tqdm(windows, desc=f"Windows [{model['model_id']}]", leave=False):
-                if window["video_path"] is None:
-                    results.append({
-                        "window_id": window["window_id"],
-                        "video_name": window["video_name"],
-                        "drowsiness_level": window["drowsiness_level"],
-                        "ambiguities_detected": None,
-                        "ambiguity_frame_ids": [],
-                        "ambiguity_types": [],
-                        "facial_behaviour_detected": None,
-                        "facial_behaviour_frame_ids": [],
-                        "facial_behaviours": [],
-                        "description": None,
-                        "confidence": None,
-                        "error": "Video file not found",
-                    })
-                    continue
-
+            for participant_id, csv_path in tqdm(participants, desc="Participants", leave=False):
+                print(f"\n  --- Participant: {participant_id} ---")
                 try:
-                    frames = extract_frames(window["video_path"], num_frames=num_frames)
-                    if not frames:
-                        raise RuntimeError("No frames extracted.")
+                    video_dir = video_dir_from_csv_path(csv_path)
+                    windows = load_windows_from_csv(csv_path, video_dir)
 
-                    cropped_frames = [center_crop_half(f, offset_x=crop_offset_x, offset_y=crop_offset_y) for f in frames]
-
-                    output = query_vlm(
+                    results = evaluate_participant(
+                        participant_id=participant_id,
+                        windows=windows,
                         model_id=model["model_id"],
-                        frames=cropped_frames,
+                        model_name=model_name,
+                        out_dir=out_dir,
+                        frames_base_dir=frames_base_dir,
+                        num_frames=num_frames,
                         temperature=model.get("temperature", 0.1),
-                        cols=contact_sheet_cols,
+                        contact_sheet_cols=contact_sheet_cols,
                         thumb_width=thumb_width,
+                        crop_offset_x=crop_offset_x,
+                        crop_offset_y=crop_offset_y,
+                        save_frames=save_frames,
                     )
-                    output["window_id"] = window["window_id"]
-                    output["video_name"] = window["video_name"]
-                    output["drowsiness_level"] = window["drowsiness_level"]
-                    output["error"] = None
-
-                    if save_frames:
-                        highlight_ids = set(
-                            output.get("ambiguity_frame_ids", []) +
-                            output.get("facial_behaviour_frame_ids", [])
-                        )
-                        window_frames_dir = os.path.join(
-                            frames_base_dir,
-                            f"window_{window['window_id']}"
-                        )
-                        save_individual_frames(
-                            cropped_frames,
-                            window_frames_dir,
-                            highlight_frame_ids=highlight_ids,
-                        )
-                        mlflow.log_artifacts(
-                            window_frames_dir,
-                            artifact_path=f"frames/window_{window['window_id']}"
-                        )
+                    all_results.extend(results)
 
                 except Exception as e:
-                    output = {
-                        "window_id": window["window_id"],
-                        "video_name": window["video_name"],
-                        "drowsiness_level": window["drowsiness_level"],
-                        "ambiguities_detected": None,
-                        "ambiguity_frame_ids": [],
-                        "ambiguity_types": [],
-                        "facial_behaviour_detected": None,
-                        "facial_behaviour_frame_ids": [],
-                        "facial_behaviours": [],
-                        "description": None,
-                        "confidence": None,
-                        "error": str(e),
-                    }
+                    print(f"  Failed for participant {participant_id}: {e}")
 
-                results.append(output)
+            if all_results:
+                log_overall_metrics(all_results, model_name, out_dir)
 
-            total = len(results)
-            errors = sum(1 for r in results if r["error"])
-            amb_detected = sum(1 for r in results if r.get("ambiguities_detected") is True)
-            face_detected = sum(1 for r in results if r.get("facial_behaviour_detected") is True)
-            processed = total - errors
-
-            mlflow.log_metrics({
-                "total_windows": total,
-                "processed_windows": processed,
-                "errors": errors,
-                "windows_with_ambiguities": amb_detected,
-                "windows_with_facial_behaviour": face_detected,
-                "ambiguity_rate": amb_detected / max(processed, 1),
-                "facial_behaviour_rate": face_detected / max(processed, 1),
-            })
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_path = os.path.join(out_dir, f"{model_name}_{timestamp}_results.json")
-            with open(out_path, "w") as f:
-                json.dump(results, f, indent=2)
-            mlflow.log_artifact(out_path)
-
-            print(f"Completed {experiment_name}: {total} windows, {errors} errors, "
-                  f"{amb_detected} with ambiguities, {face_detected} with facial behaviour.")
+        print(f"\nCompleted evaluation for {experiment_name}")
 
 
 if __name__ == "__main__":
     run_vlm_evaluation(
-        csv_path="/home/vanchha/Refined_Participants_Data/05_TG_Data/TG_Data.csv",
-        video_dir="/home/vanchha/Refined_Participants_Data/05_TG_Data/videos",
+        root_dir="/home/vanchha/Refined_Participants_Data",
         model_config_path="src/configs/vlm_model_config.toml",
         num_frames=60,
         out_dir="vlm_outputs",
@@ -407,6 +516,6 @@ if __name__ == "__main__":
         save_frames=True,
         contact_sheet_cols=10,
         thumb_width=160,
-        crop_offset_x=0,   # <-- your value here
+        crop_offset_x=0,
         crop_offset_y=0,
     )

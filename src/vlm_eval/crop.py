@@ -13,9 +13,9 @@ FRAME_INDEX = 0
 
 # Crop parameters — tune these
 CROP_WIDTH_FRACTION = 0.5   # fraction of original width to keep
-CROP_HEIGHT_FRACTION = 0.5  # fraction of original height to keep
+CROP_HEIGHT_FRACTION = 0.75  # fraction of original height to keep
 OFFSET_X = 0           # shift crop left(-) or right(+) in pixels
-OFFSET_Y = 0                # shift crop up(-) or down(+) in pixels
+OFFSET_Y = 100                # shift crop up(-) or down(+) in pixels
 
 
 def extract_single_frame(video_path: str, frame_index: int = 0) -> np.ndarray:
