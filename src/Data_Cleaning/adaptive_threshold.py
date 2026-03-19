@@ -1,316 +1,197 @@
 #!/usr/bin/env python3
 """
-Build the final processed CSV from raw participant data.
-raw_ear, raw_mar, raw_ppg, metric_BPM are read from the .h5 file.
-All other metrics and annotations are read from the CSV file.
+Simple PCA on the final CSV metrics.
  
-EAR baseline (first 5 windows):
-  - closed_threshold : min non-zero EAR (fully-closed eye floor)
-  - open_threshold   : mean EAR of non-blink frames (open-eye baseline)
-    Blink frames are identified as ±50ms around every local EAR minimum.
- 
-All ocular metrics are recalculated using open_threshold as ear_threshold.
-Frames with EAR == 0 are undetected frames and treated the same as None.
+Outputs:
+  - pca_2d.png                  : 2D scatter plot coloured by Annotator_1 drowsiness label
+  - pca_variance.png            : explained variance bar chart
+  - explained_variance.csv      : variance and cumulative variance per PC
+  - pca_loadings_matrix.csv     : full feature vs PC loadings matrix
+  - feature_importance_per_pc.csv : features ranked by absolute loading for each PC
+  - pca_transformed_data.csv    : the transformed dataset including identifiers and labels
+  - pc_bar_charts/              : folder containing individual bar charts for the top features of each PC
+  - Console                     : top features per principal component (all PCs)
 """
  
-import ast
+import os
 import numpy as np
 import pandas as pd
-import h5py
-import neurokit2 as nk
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
  
-# --- HARDCODED INPUT ---
-INPUT_CSV  = "/home/vanchha/Refined_Participants_Data/02_MK_Data/MK_Data.csv"
-INPUT_H5   = "/home/vanchha/Refined_Participants_Data/02_MK_Data/session_data.h5"
-OUTPUT_CSV = "/home/vanchha/Refined_Participants_Data/02_MK_Data/MK_Data_final.csv"
+INPUT_CSV = "/home/vanchha/Refined_Participants_Data/02_MK_Data/MK_Data_final.csv"
+OUTPUT_DIR = "/home/vanchha/Refined_Participants_Data/02_MK_Data/PCA"
  
-BASELINE_WINDOWS  = 5
-MIN_CONSEC_FRAMES = 0    # per specification
-PPG_SR            = 100  # PPG sampling rate in Hz
+# Columns to exclude from PCA (non-numeric, identifiers, raw signals, annotations)
+EXCLUDE_COLS = [
+    "initial_timestamp", "window_id", "video", "participant_id",
+    "Annotator_1", "Annotator_2", "Annotator_1_Notes", "Annotator_2_Notes",
+    "raw_ear", "raw_mar", "raw_ppg", "metric_BPM",
+    "drive_duration",
+]
  
- 
-# ---------------------------------------------------------------------------
-# H5 loader
-# ---------------------------------------------------------------------------
- 
-def load_raw_signals_from_h5(h5_path: str) -> pd.DataFrame:
-    """
-    Load raw_ear, raw_mar, raw_ppg, metric_BPM from .h5 file.
-    Structure: window_N/raw_data/ear|mar|ppg|smooth_bpm
-    metric_BPM stored as deduplicated array string per window.
-    """
-    records = []
-    with h5py.File(h5_path, "r") as f:
-        for window_key in f.keys():
-            raw_data = f[window_key]["raw_data"]
-            bpm_raw    = np.array(raw_data["smooth_bpm"])
-            bpm_unique = np.unique(bpm_raw)
-            bpm_unique = bpm_unique[bpm_unique > 0]
-            records.append({
-                "window_id":  int(window_key.replace("window_", "")),
-                "raw_ear":    np.array(raw_data["ear"]),
-                "raw_mar":    np.array(raw_data["mar"]),
-                "raw_ppg":    np.array(raw_data["ppg"]),
-                "metric_BPM": str(bpm_unique.tolist()),
-            })
-    return pd.DataFrame(records).sort_values("window_id").reset_index(drop=True)
+LABEL_COL  = "Annotator_1"
+N_TOP      = 10   # Increased to 10 to make the bar charts more informative
  
  
-# ---------------------------------------------------------------------------
-# Baseline extraction
-# ---------------------------------------------------------------------------
- 
-def extract_ear_thresholds(ear_arrays: list) -> tuple[float, float]:
-    """
-    Derive participant-specific EAR thresholds from the first BASELINE_WINDOWS windows.
- 
-    Steps:
-    1. Find local minima (non-zero) — blink valleys.
-    2. Mark ±50ms around each minimum as blink frames.
-    3. closed_threshold = min non-zero EAR across all baseline frames.
-    4. open_threshold   = mean EAR of non-blink, non-zero frames.
- 
-    Returns:
-        closed_threshold : floor of a fully-closed eye
-        open_threshold   : open-eye baseline — used as ear_threshold in all metrics
-    """
-    all_nonzero    = []
-    open_eye_values = []
- 
-    for ear_array in ear_arrays:
-        ear        = np.array(ear_array, dtype=float)
-        valid_mask = ear > 0
-        valid_vals = ear[valid_mask]
-        if len(valid_vals) == 0:
-            continue
- 
-        fps      = len(valid_vals) / 60.0
-        half_win = max(1, round(0.05 * fps))  # 50ms in frames
- 
-        # Mark blink frames: ±half_win around each local minimum
-        blink_mask = np.zeros(len(ear), dtype=bool)
-        for i in range(1, len(ear) - 1):
-            if ear[i] <= 0:
-                continue
-            if ear[i] < ear[i - 1] and ear[i] < ear[i + 1]:
-                start = max(0, i - half_win)
-                end   = min(len(ear), i + half_win + 1)
-                blink_mask[start:end] = True
- 
-        all_nonzero.extend(valid_vals.tolist())
-        open_frames = ear[valid_mask & ~blink_mask]
-        open_eye_values.extend(open_frames.tolist())
- 
-    closed_threshold = float(np.min(all_nonzero)) if all_nonzero else 0.0
- 
-    if open_eye_values:
-        open_threshold = float(np.mean(open_eye_values))
-    else:
-        open_threshold = float(np.mean(all_nonzero)) if all_nonzero else 0.0
- 
-    return closed_threshold, open_threshold
- 
- 
-# ---------------------------------------------------------------------------
-# Metric calculation
-# ---------------------------------------------------------------------------
- 
-def _is_valid(ear) -> bool:
-    """Frame is valid if it is not None and not zero (undetected)."""
-    return ear is not None and ear > 0
- 
- 
-def calculate_perclos(ear_values, ear_threshold: float, min_consec_frames: int) -> float:
-    """
-    PERCLOS: % of valid frames in contiguous runs >= min_consec_frames
-    where EAR < ear_threshold.  Returns 0–100.
-    Zero-valued frames are treated as undetected (excluded).
-    """
-    closed_frames = 0
-    consec_count  = 0
- 
-    for ear in ear_values:
-        if _is_valid(ear):
-            if ear < ear_threshold:
-                consec_count += 1
-            else:
-                if consec_count >= min_consec_frames:
-                    closed_frames += consec_count
-                consec_count = 0
-        else:
-            if consec_count >= min_consec_frames:
-                closed_frames += consec_count
-            consec_count = 0
- 
-    if consec_count >= min_consec_frames:
-        closed_frames += consec_count
- 
-    total_frames = sum(_is_valid(e) for e in ear_values)
-    if total_frames == 0:
-        return 0.0
-    return (closed_frames / total_frames) * 100.0
- 
- 
-def calculate_blink_stats_all(ear_values, ear_threshold: float) -> tuple[float, float, float]:
-    """
-    Blink duration stats. A blink = contiguous run of valid frames where EAR < ear_threshold.
-    FPS derived dynamically from valid frame count over 60s window.
-    Returns (mean_s, std_s, max_s).
-    """
-    total_frames = sum(_is_valid(e) for e in ear_values)
-    if total_frames == 0:
-        return 0.0, 0.0, 0.0
- 
-    fps             = total_frames / 60.0
-    blink_durations = []
-    consec_count    = 0
- 
-    for ear in ear_values:
-        if _is_valid(ear):
-            if ear < ear_threshold:
-                consec_count += 1
-            else:
-                if consec_count > 0:
-                    blink_durations.append(consec_count / fps)
-                    consec_count = 0
-        else:
-            if consec_count > 0:
-                blink_durations.append(consec_count / fps)
-                consec_count = 0
- 
-    if consec_count > 0:
-        blink_durations.append(consec_count / fps)
- 
-    if not blink_durations:
-        return 0.0, 0.0, 0.0
- 
-    return (
-        float(np.mean(blink_durations)),
-        float(np.std(blink_durations)),
-        float(np.max(blink_durations)),
-    )
- 
- 
-def calculate_blink_rate(ear_values, ear_threshold: float) -> float:
-    """
-    Blink events per minute.
-    A blink event starts when EAR drops below ear_threshold (from above).
-    Zero / undetected frames reset the in_blink state.
-    Window is 60s so blink_count == blinks per minute directly.
-    """
-    total_frames = sum(_is_valid(e) for e in ear_values)
-    if total_frames == 0:
-        return 0.0
- 
-    blink_count = 0
-    in_blink    = False
- 
-    for ear in ear_values:
-        if not _is_valid(ear):
-            in_blink = False
-        elif ear < ear_threshold and not in_blink:
-            blink_count += 1
-            in_blink = True
-        elif ear >= ear_threshold:
-            in_blink = False
- 
-    return float(blink_count)
- 
- 
-def calculate_hrv_features(ppg_array, sampling_rate: int = PPG_SR) -> dict:
-    """Compute all neurokit2 HRV features from raw PPG. Returns {} on failure."""
-    try:
-        signals, _ = nk.ppg_process(ppg_array, sampling_rate=sampling_rate)
-        hrv = nk.hrv(signals, sampling_rate=sampling_rate, show=False)
-        return {col: float(hrv[col].iloc[0]) for col in hrv.columns}
-    except Exception as e:
-        print(f"  HRV failed: {e}")
-        return {}
- 
- 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
- 
-def build_final_csv(input_csv: str, input_h5: str, output_csv: str):
+def run_pca(input_csv: str, output_dir: str):
+    # Ensure the main output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create sub-directory for individual PC bar charts
+    bar_charts_dir = os.path.join(output_dir, "pc_bar_charts")
+    os.makedirs(bar_charts_dir, exist_ok=True)
+    
     df = pd.read_csv(input_csv)
  
-    # Drop raw signal columns from CSV — all come from h5
-    drop_cols = ["raw_ear", "raw_mar", "raw_ppg", "metric_BPM"]
-    df = df.drop(columns=[c for c in drop_cols if c in df.columns])
+    # Keep only rows with a valid label
+    if LABEL_COL in df.columns:
+        df = df[df[LABEL_COL].notna()].reset_index(drop=True)
+        labels = df[LABEL_COL].astype(str)
+    else:
+        labels = None
  
-    # Load raw signals from h5 and merge
-    h5_df = load_raw_signals_from_h5(input_h5)
-    df    = df.merge(h5_df, on="window_id", how="left")
-    print(f"Loaded {len(df)} windows after merge.")
+    # Build feature matrix
+    feature_df = df.drop(columns=[c for c in EXCLUDE_COLS if c in df.columns], errors="ignore")
+    feature_df = feature_df.select_dtypes(include=[np.number])
+    feature_df = feature_df.dropna(axis=1, how="all")
+    feature_df = feature_df.fillna(feature_df.median())
  
-    # drive_duration: elapsed seconds since session start
-    df["drive_duration"] = df["initial_timestamp"] - df["initial_timestamp"].iloc[0]
+    feature_names = feature_df.columns.tolist()
+    print(f"Features used for PCA: {len(feature_names)}")
  
-    # --- Participant-specific baselines from first BASELINE_WINDOWS windows ---
-    baseline_rows = df.iloc[:BASELINE_WINDOWS]
+    X = StandardScaler().fit_transform(feature_df)
+    pca = PCA()
+    X_pca = pca.fit_transform(X)
+    
+    pc_columns = [f"PC{i+1}" for i in range(len(pca.components_))]
  
-    closed_threshold, open_threshold = extract_ear_thresholds(baseline_rows["raw_ear"].tolist())
+    # --- 1. Export Explained Variance ---
+    cumvar = np.cumsum(pca.explained_variance_ratio_)
+    exp_var_df = pd.DataFrame({
+        "Principal_Component": pc_columns,
+        "Explained_Variance_Ratio": pca.explained_variance_ratio_,
+        "Cumulative_Variance_Ratio": cumvar
+    })
+    exp_var_path = os.path.join(output_dir, "explained_variance.csv")
+    exp_var_df.to_csv(exp_var_path, index=False)
+    print(f"Saved: {exp_var_path}")
+
+    # --- 2. Export PCA Loadings Matrix ---
+    loadings_df = pd.DataFrame(pca.components_.T, index=feature_names, columns=pc_columns)
+    loadings_path = os.path.join(output_dir, "pca_loadings_matrix.csv")
+    loadings_df.to_csv(loadings_path, index=True, index_label="Feature")
+    print(f"Saved: {loadings_path}")
+
+    # --- 3. Export Feature Importance Per PC ---
+    imp_records = []
+    for i, component in enumerate(pca.components_):
+        sorted_idx = np.argsort(np.abs(component))[::-1]
+        for rank, idx in enumerate(sorted_idx):
+            imp_records.append({
+                "PC": f"PC{i+1}",
+                "Rank": rank + 1,
+                "Feature": feature_names[idx],
+                "Loading": component[idx],
+                "Absolute_Loading": np.abs(component[idx])
+            })
+    feat_imp_df = pd.DataFrame(imp_records)
+    feat_imp_path = os.path.join(output_dir, "feature_importance_per_pc.csv")
+    feat_imp_df.to_csv(feat_imp_path, index=False)
+    print(f"Saved: {feat_imp_path}")
+
+    # --- 4. Export Transformed Data ---
+    transformed_df = pd.DataFrame(X_pca, columns=pc_columns)
+    if labels is not None:
+        transformed_df[LABEL_COL] = labels.values
+    
+    for col in reversed(["initial_timestamp", "window_id", "participant_id", "video"]):
+        if col in df.columns:
+            transformed_df.insert(0, col, df[col].values)
+            
+    transformed_path = os.path.join(output_dir, "pca_transformed_data.csv")
+    transformed_df.to_csv(transformed_path, index=False)
+    print(f"Saved: {transformed_path}")
  
-    mar_baseline = float(np.mean(np.concatenate(
-        [np.array(x, dtype=float) for x in baseline_rows["raw_mar"]]
-    )))
-    bpm_baseline = float(np.mean([
-        np.mean(ast.literal_eval(v)) for v in baseline_rows["metric_BPM"]
-    ]))
-    ppg_baseline_mean = float(np.mean(np.concatenate(
-        [np.array(x, dtype=float) for x in baseline_rows["raw_ppg"]]
-    )))
+    # --- 2D scatter coloured by label ---
+    fig, ax = plt.subplots(figsize=(10, 7))
+    if labels is not None:
+        for label in sorted(labels.unique()):
+            mask = labels == label
+            ax.scatter(X_pca[mask, 0], X_pca[mask, 1], label=label, alpha=0.7, s=40)
+        ax.legend(title=LABEL_COL, loc="best")
+    else:
+        ax.scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.7, s=40)
  
-    # Midpoint between fully-closed floor and open-eye baseline
-    ear_threshold = (closed_threshold + open_threshold) / 2.0
+    ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0] * 100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1] * 100:.1f}%)")
+    ax.set_title("PCA 2D Visualization")
+    plt.tight_layout()
+    pca_2d_path = os.path.join(output_dir, "pca_2d.png")
+    plt.savefig(pca_2d_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {pca_2d_path}")
  
-    print(
-        f"Baselines -> EAR closed: {closed_threshold:.4f} | EAR open: {open_threshold:.4f} | "
-        f"EAR threshold (mid): {ear_threshold:.4f} | "
-        f"MAR neutral: {mar_baseline:.4f} | BPM neutral: {bpm_baseline:.2f} | "
-        f"PPG mean: {ppg_baseline_mean:.4f}"
-    )
+    # --- Explained variance bar chart ---
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(range(1, len(pca.explained_variance_ratio_) + 1), pca.explained_variance_ratio_)
+    ax.set_xlabel("Principal Component")
+    ax.set_ylabel("Explained Variance Ratio")
+    ax.set_title("Explained Variance per PC")
+    plt.tight_layout()
+    pca_variance_path = os.path.join(output_dir, "pca_variance.png")
+    plt.savefig(pca_variance_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {pca_variance_path}")
  
-    # --- Recalculate ocular metrics ---
-    df["metric_PERCLOS"] = df["raw_ear"].apply(
-        lambda x: calculate_perclos(x, ear_threshold, MIN_CONSEC_FRAMES)
-    )
-    df[["blink_duration_mean", "blink_duration_std", "blink_duration_max"]] = df["raw_ear"].apply(
-        lambda x: pd.Series(calculate_blink_stats_all(x, ear_threshold))
-    )
-    df["metric_BlinkRate"] = df["raw_ear"].apply(
-        lambda x: calculate_blink_rate(x, ear_threshold)
-    )
+    # --- Save Individual Bar Charts for Top Features Per PC ---
+    # Only plotting up to the 95% variance threshold to prevent generating too many images
+    n_pcs_95 = np.argmax(cumvar >= 0.95) + 1
+    print(f"\nPCs to reach 95% variance: {n_pcs_95}")
+    print(f"PC1 + PC2 cumulative variance: {cumvar[1] * 100:.1f}%")
+    print(f"\nSaving top {N_TOP} feature bar charts for the first {n_pcs_95} PCs into {bar_charts_dir}/ ...")
+    
+    for i in range(n_pcs_95):
+        component = pca.components_[i]
+        top_idx = np.argsort(np.abs(component))[::-1][:N_TOP]
+        
+        loadings = component[top_idx]
+        names = [feature_names[j] for j in top_idx]
+        
+        # Reverse to display the highest loading at the top of the horizontal bar chart
+        names.reverse()
+        loadings = loadings[::-1]
+        
+        # Color coding: blue for positive loadings, red for negative
+        colors = ['steelblue' if val >= 0 else 'crimson' for val in loadings]
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.barh(names, loadings, color=colors, edgecolor='black', alpha=0.8)
+        
+        ax.set_xlabel("Loading Value")
+        ax.set_title(f"PC{i+1} Top Features (Explains {pca.explained_variance_ratio_[i] * 100:.1f}%)")
+        ax.grid(axis='x', linestyle='--', alpha=0.7)
+        
+        # Add a vertical line at 0 for clarity
+        ax.axvline(0, color='black', linewidth=1)
+        
+        plt.tight_layout()
+        chart_path = os.path.join(bar_charts_dir, f"PC{i+1:02d}_top_features.png")
+        plt.savefig(chart_path, dpi=150)
+        plt.close(fig)
+        
+    print(f"Completed saving {n_pcs_95} bar charts.")
  
-    # --- HRV from raw_ppg ---
-    print("Computing HRV features (this may take a moment)...")
-    hrv_rows = df["raw_ppg"].apply(
-        lambda x: pd.Series(calculate_hrv_features(np.array(x, dtype=float)))
-    ).fillna(np.nan)
-    hrv_cols = list(hrv_rows.columns)
-    for col in hrv_cols:
-        df[col] = hrv_rows[col]
- 
-    # --- Final column ordering (raw signals kept as columns 20–22) ---
-    base_cols = [
-        "initial_timestamp", "window_id", "video", "participant_id",
-        "Annotator_1", "Annotator_2", "Annotator_1_Notes", "Annotator_2_Notes",
-        "drive_duration",
-        "metric_PERCLOS", "metric_BlinkRate",
-        "blink_duration_mean", "blink_duration_std", "blink_duration_max",
-        "metric_YawnRate", "metric_Entropy", "metric_SteeringRate", "metric_SDLP",
-        "metric_BPM",
-        "raw_ear", "raw_mar", "raw_ppg",
-    ]
-    final_cols = [c for c in base_cols if c in df.columns] + hrv_cols
-    df = df[final_cols]
- 
-    df.to_csv(output_csv, index=False)
-    print(f"Saved → {output_csv}  |  shape: {df.shape}  |  HRV features: {len(hrv_cols)}")
+    # --- Console outputs ---
+    print(f"\nTop {N_TOP} features per principal component:")
+    print("=" * 60)
+    for i, component in enumerate(pca.components_):
+        top_idx = np.argsort(np.abs(component))[::-1][:N_TOP]
+        print(f"\nPC{i + 1}  (explains {pca.explained_variance_ratio_[i] * 100:.1f}%):")
+        for j in top_idx:
+            print(f"  {feature_names[j]:<45}  loading = {component[j]:+.4f}")
  
  
 if __name__ == "__main__":
-    build_final_csv(INPUT_CSV, INPUT_H5, OUTPUT_CSV)
- 
- 
+    run_pca(INPUT_CSV, OUTPUT_DIR)
