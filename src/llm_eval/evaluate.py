@@ -156,6 +156,7 @@ def run_evaluation(
     num_runs: int = 4,
     enable_history_: bool = True,
     history_limit_: int = 10,
+    experiment_suffix: str = "",
 ):
     """
     One MLflow experiment per model, covering all participants sequentially.
@@ -167,7 +168,7 @@ def run_evaluation(
     existing_experiments = {exp.name: exp.experiment_id for exp in mlflow.search_experiments()}
 
     for model in tqdm(models, desc="Evaluating models"):
-        experiment_name = model["name"]
+        experiment_name = model["name"] + experiment_suffix
         try:
             if experiment_name in existing_experiments:
                 print(f"\nExperiment '{experiment_name}' already exists — skipping.")
@@ -177,6 +178,7 @@ def run_evaluation(
             mlflow.set_experiment(experiment_name)
 
             with mlflow.start_run(run_name=experiment_name):
+                mlflow.set_tags({"dataset": experiment_suffix.strip("_") if experiment_suffix else "baseline"})
                 mlflow.log_params({
                     "provider": model["provider"],
                     "model_id": model["model_id"],
@@ -250,11 +252,11 @@ def run_evaluation(
 
 
 def dataset_directories(root_dir: str) -> list[str]:
-    """Recursively find all CSV files ending with 'Data.csv' under root_dir."""
+    """Recursively find all CSV files ending with '_clustered.csv' under root_dir."""
     dataset_list = []
     for subdir, _, files in os.walk(root_dir):
         for file in files:
-            if file.endswith("Data.csv"):
+            if file.endswith("_clustered.csv"):
                 dataset_list.append(os.path.join(subdir, file))
     return dataset_list
 
@@ -262,15 +264,15 @@ def dataset_directories(root_dir: str) -> list[str]:
 def participant_id_from_path(csv_path: str) -> str:
     """Extract participant identifier from the CSV path.
 
-    E.g. '.../01_V_Data/V_Data.csv' → '01_V'
+    E.g. '.../Clustered_Participants_Data/01_V_clustered.csv' → '01_V'
     """
-    folder = os.path.basename(os.path.dirname(csv_path))
-    return folder.replace("_Data", "")
+    filename = os.path.basename(csv_path)
+    return filename.replace("_clustered.csv", "")
 
 
 if __name__ == "__main__":
 
-    csv_paths = dataset_directories("/home/karthik/Desktop/llm_eval/Refined_Participants_Data")
+    csv_paths = dataset_directories("/home/karthik/Desktop/llm_eval/Clustered_Participants_Data")
     participants = [(participant_id_from_path(p), p) for p in sorted(csv_paths)]
 
     print("Found participants:")
@@ -285,5 +287,6 @@ if __name__ == "__main__":
         num_runs=4,        # Used only if multi_run=True
         enable_history_=True,
         history_limit_=10,
+        experiment_suffix="_clustered",
     )
 

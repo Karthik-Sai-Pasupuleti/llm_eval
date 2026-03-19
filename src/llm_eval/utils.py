@@ -27,9 +27,10 @@ def load_driver_data(csv_path: str) -> pd.DataFrame:
 
     df = df.rename(columns=rename_map)
 
-    # Map annotator labels to drowsiness_level integers (1=Low, 2=Moderate, 3=High)
-    label_map = {"Low": 1, "Moderate": 2, "High": 3}
-    df["drowsiness_level"] = df["Annotator_1"].map(label_map)
+    # Use drowsiness_level directly if present, otherwise map from Annotator_1
+    if "drowsiness_level" not in df.columns:
+        label_map = {"Low": 1, "Moderate": 2, "High": 3}
+        df["drowsiness_level"] = df["Annotator_1"].map(label_map)
 
     # Optional: check expected columns
     expected_cols = [
@@ -39,6 +40,8 @@ def load_driver_data(csv_path: str) -> pd.DataFrame:
         "steering_entropy",
         "steering_reversal_rate",
         "std_lane_position",
+        "blink_duration_mean",
+        "blink_duration_max",
     ]
     for col in expected_cols:
         if col not in df.columns:

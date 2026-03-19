@@ -13,6 +13,10 @@ wheels/
 runs/
 artifacts/
 Refined_Participants_Data/
+Cropped_Participants_Data/
+Processed_Participants_Data/
+Clustered_Participants_Data/
+Cropped_Videos
 mlruns/
 .mlruns/
 .env
