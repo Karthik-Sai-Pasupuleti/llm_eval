@@ -1,24 +1,9 @@
 [[models]]
-name = "llava_13b"
-model_id = "llava:13b"
-temperature = 0.1
-
-[[models]]
-name = "llava_phi3"
-model_id = "llava-phi3:3.8b"
-temperature = 0.1
-
-[[models]]
 name = "qwen2_5_vl_7b"
 model_id = "qwen2.5vl:7b"
 temperature = 0.1
 
 [[models]]
-name = "gemma3_12b"
-model_id = "gemma3:12b"
-temperature = 0.1
-
-[[models]]
-name = "minicpm_v_8b"
-model_id = "minicpm-v:8b"
+name = "qwen2_5vl_32b"
+model_id = "qwen2.5vl:32b"
 temperature = 0.1
