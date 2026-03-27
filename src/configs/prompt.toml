@@ -1,157 +1,99 @@
-# =====================================
-# DRIVER DROWSINESS DETECTION PROMPT
-# Calibration-based | No HR/HRV | WSS 3-class mapping
-# =====================================
+# DRIVER DROWSINESS DETECTION — CLEAN FEW-SHOT PROMPT
 
-title = "Driver Drowsiness Detection Prompt"
-description = "LLM prompt for calibration-based driver drowsiness classification using visual and steering features only, mapped from the Wierwille Sleepiness Scale (WSS) to 3 levels."
+title = "Driver Drowsiness Detection Prompt (Clean)"
+description = "Minimal few-shot prompt for drowsiness classification. No explicit rules — the examples teach the logic."
 
 [driver_prompt]
 
 prompt = """
-**Driver Drowsiness Classification – Calibration-Based Reasoning (Wierwille Sleepiness Scale)**
+Classify driver drowsiness into 3 levels based on sensor data from a single time window.
 
-You are a **driver-monitoring AI assistant**. You analyze per-window behavioral and driving data to classify drowsiness level.
-Your classification is grounded in the **Wierwille Sleepiness Scale (WSS)** and uses a **personal calibration baseline** established from the first 5 windows of each participant's session.
+- **1 (Low):** Alert, normal driving
+- **2 (Moderate):** Fatigue onset
+- **3 (High):** Severe drowsiness
 
----
+Primary indicator: blink_duration_mean. Use PERCLOS, blink_duration_max, and SDLP to confirm or escalate. When uncertain, bias toward the higher class.
 
-### **Calibration Phase vs. Prediction Phase**
-
-**CALIBRATION (first 5 windows):**
-- Study the participant's personal baseline: their typical PERCLOS, blink rate, blink duration, yawning frequency, lane stability, and steering patterns.
-- Do NOT expect drowsiness in early windows — establish what "alert" looks like for this specific driver.
-- Acknowledge calibration explicitly in reasoning (e.g., "Establishing baseline: PERCLOS typically ~X%, blink rate ~Y/min").
-
-**PREDICTION (windows after calibration):**
-- Classify drowsiness relative to this participant's established personal baseline.
-- Focus on **deviation from their own norm**, not population norms.
-- A small absolute PERCLOS might still indicate drowsiness if it is elevated above this driver's baseline.
-
-Current window status: **{is_calibration}**
-
----
-
-### **Drowsiness Classification — Wierwille Sleepiness Scale (WSS) Mapping**
-
-Output an integer (1, 2, or 3):
-
-| Output | WSS Range | Label | Indicators |
-|--------|-----------|-------|------------|
-| **1** | WSS 1–2 | **Low Drowsy** | Alert appearance; normal facial tone; fast, short eye blinks; brief glances; occasional body movements at most. Still sufficiently alert with possibly slightly slower blinks or minor fidgeting. |
-| **2** | WSS 3 to partial 4 | **Moderate Drowsy** | Eyelid closures lasting 1–3 seconds; mannerisms (rubbing face/eyes, scratching); decreasing facial tone; glassy eyes; fixed staring; beginning lack of focused attention. |
-| **3** | WSS partial 4 to 5 | **High Drowsy** | Eyelid closures >3 seconds; eyes rolling upward/sideways; no proper focused gaze; significant lack of activity; large isolated movements; transitioning in/out of dozing. |
-
-**Decision boundary guidance:**
-- WSS 1–2 → classify **1 (Low)**
-- WSS 3, or WSS 4 where eyelid closures are ≤3 seconds → classify **2 (Moderate)**
-- WSS 4 with closures >3 seconds, or WSS 5 → classify **3 (High)**
-
----
-
-### **Feature Descriptions**
-
-**Visual / Behavioral Features:**
-- **PERCLOS (%):** Percentage of time eyes are closed over the window. Core drowsiness indicator.
-  - Low: <5% | Moderate: 5–15% | High: >15%
-- **Blink rate (per min):** Blink frequency. Very high rates suggest fatigue; very low rates suggest fixed stare.
-- **Blink duration mean (s):** Average blink duration. Prolonged blinks (>0.15 s) suggest slower eyelid recovery — a key WSS fatigue marker.
-- **Blink duration max (s):** Longest blink in window. Values approaching 0.25–0.4 s may indicate partial eye closure events.
-- **Yawning rate (per min):** Yawns per minute. Even 1 yawn/min is meaningful; >2/min strongly indicates drowsiness.
-
-**Lane & Steering Features:**
-- **SDLP (m):** Standard deviation of lateral lane position. Higher SDLP = reduced lane-keeping precision.
-- **Steering entropy:** Complexity/variability of steering inputs. Elevated entropy → erratic control; very low entropy → monotonous/reduced responsiveness.
-- **Steering reversal rate (per sec):** Frequency of steering direction reversals. Declining rate suggests reduced active steering corrections (fatigue-related).
-
-**Temporal Feature:**
-- **Window ID (min):** Minutes of continuous driving. Longer sessions accumulate fatigue; later windows require stronger evidence to maintain "Low" classification.
-
----
-
-### **Reasoning Process (Chain-of-Thought)**
-
-1. **Calibration awareness:** If calibration, summarize the baseline values observed. If prediction, note how current values compare to the established baseline.
-2. **Visual fatigue assessment:** Evaluate PERCLOS, blink duration (mean & max), blink rate, and yawning rate against WSS criteria.
-3. **Driving behavior assessment:** Evaluate SDLP and steering metrics for lane stability and active vehicle control.
-4. **Driving duration context:** Consider window ID — later in session, same metric values carry higher drowsiness weight.
-5. **WSS mapping:** Map observed indicators to WSS range, then assign class 1, 2, or 3 per the table above.
-6. **Final classification:**
-   - All indicators near baseline, no prolonged blinks or yawning → **1 (Low)**
-   - Moderate PERCLOS elevation, some blink prolongation, OR minor lane deviation above baseline → **2 (Moderate)**
-   - Clear eyelid closure events (>3 s), elevated PERCLOS well above baseline, poor lane control → **3 (High)**
-
----
-
-### **Output Specification**
-Return **ONLY a JSON object** with two keys:
-- `"drowsiness_level"`: integer — 1 (Low), 2 (Moderate), or 3 (High)
-- `"reasoning"`: concise explanation referencing WSS indicators and baseline comparison
-
----
-
-### **Few-Shot Examples**
-
-Example 1 (Calibration window):
-Input: is_calibration=CALIBRATION WINDOW, window_id: 2, perclos: 2.1, blink_rate: 14.0, blink_duration_mean: 0.095, blink_duration_max: 0.11, yawning_rate: 0.0, sdlp: 0.22, steering_entropy: 0.03, steering_reversal_rate: 1.2
-Output:
+Return ONLY valid JSON:
 ```json
-{{{{ "drowsiness_level": 1, "reasoning": "Calibration window 2: Establishing baseline — PERCLOS ~2.1%, blink rate ~14/min, short blink durations (~0.095 s mean), no yawning, stable lane (SDLP 0.22 m), steady steering. Driver appears alert (WSS 1). Baseline recorded." }}}}
+{{"drowsiness_level": <1|2|3>, "reasoning": "<2–3 sentences>"}}
 ```
 
-Example 2 (Prediction — Low):
-Input: is_calibration=PREDICTION WINDOW, window_id: 8, perclos: 3.2, blink_rate: 16.0, blink_duration_mean: 0.105, blink_duration_max: 0.13, yawning_rate: 0.0, sdlp: 0.24, steering_entropy: 0.04, steering_reversal_rate: 1.1
-Output:
+---
+
+### Examples (Real Data from Field Study)
+
+**Example 1: Typical Low Drowsiness**
+perclos: 3.61% | blink_rate: 21.0/min | blink_duration_mean: 0.103s | blink_duration_max: 0.367s | sdlp: 0.25m
 ```json
-{{{{ "drowsiness_level": 1, "reasoning": "Metrics remain near calibrated baseline (PERCLOS 3.2% vs ~2.1% baseline — small elevation). Blink durations still short, no yawning, lane position stable. Consistent with WSS 1–2 (alert to slightly drowsy). Classify: Low (1)." }}}}
+{{"drowsiness_level": 1, "reasoning": "Blink mean 0.103s well within alert range (<0.12s typical). PERCLOS 3.61% and SDLP 0.25m both low. Driver is alert."}}
 ```
 
-Example 3 (Prediction — Moderate):
-Input: is_calibration=PREDICTION WINDOW, window_id: 15, perclos: 8.5, blink_rate: 22.0, blink_duration_mean: 0.175, blink_duration_max: 0.22, yawning_rate: 1.0, sdlp: 0.31, steering_entropy: 0.07, steering_reversal_rate: 0.6
-Output:
+**Example 2: Minimal Blink Activity (Low)**
+perclos: 0.11% | blink_rate: 2.0/min | blink_duration_mean: 0.034s | blink_duration_max: 0.034s | sdlp: 0.29m
 ```json
-{{{{ "drowsiness_level": 2, "reasoning": "Noticeable deviation from baseline: PERCLOS elevated to 8.5% (from ~2% baseline), blink durations prolonged (mean 0.175 s — above the 0.15 s WSS threshold), 1 yawn/min detected, and SDLP has risen. Steering reversal rate declining. Eyelid closures in the 1–2 s range consistent with WSS 3. Classify: Moderate (2)." }}}}
+{{"drowsiness_level": 1, "reasoning": "Extremely low blink metrics across all indicators. Blink mean 0.034s and rate 2/min show wide-awake focused driving. PERCLOS near zero confirms alertness."}}
 ```
 
-Example 4 (Prediction — High):
-Input: is_calibration=PREDICTION WINDOW, window_id: 28, perclos: 18.3, blink_rate: 9.0, blink_duration_mean: 0.310, blink_duration_max: 0.52, yawning_rate: 2.5, sdlp: 0.48, steering_entropy: 0.10, steering_reversal_rate: 0.2
-Output:
+**Example 3: Typical Moderate Drowsiness**
+perclos: 6.56% | blink_rate: 27.1/min | blink_duration_mean: 0.163s | blink_duration_max: 0.633s | sdlp: 0.25m
 ```json
-{{{{ "drowsiness_level": 3, "reasoning": "Severe deviation from baseline: PERCLOS at 18.3% (nearly 9x baseline), blink duration max at 0.52 s indicating eye closure events well above 3 s equivalent, high yawning rate (2.5/min), lane position highly unstable (SDLP 0.48 m), and steering reversal rate nearly zero (passive driving). Consistent with WSS 4–5. Classify: High (3)." }}}}
+{{"drowsiness_level": 2, "reasoning": "Blink mean 0.163s shows clear transition to fatigue state (exceeds 0.12s alert threshold). Max blink 0.633s and PERCLOS 6.56% both indicate moderate drowsiness onset."}}
 ```
 
-Here is recent interaction history (if any):
-{history}
+**Example 4: Clear High Drowsiness (High Blink Duration)**
+perclos: 10.28% | blink_rate: 17.0/min | blink_duration_mean: 0.363s | blink_duration_max: 1.767s | sdlp: 0.27m
+```json
+{{"drowsiness_level": 3, "reasoning": "Blink mean 0.363s is 3.5x the alert threshold, indicating severe drowsiness. Max blink 1.767s and PERCLOS 10.28% confirm significant impairment and eye closure periods."}}
+```
+
+**Example 5: Extreme High Drowsiness (Very High PERCLOS)**
+perclos: 38.53% | blink_rate: 17.7/min | blink_duration_mean: 1.366s | blink_duration_max: 5.969s | sdlp: 0.43m
+```json
+{{"drowsiness_level": 3, "reasoning": "Severe drowsiness signature: blink mean 1.366s (12x alert threshold), PERCLOS 38.53% indicating long eye closure periods, and elevated SDLP 0.43m showing lane drift. Critical impairment."}}
+```
+
+**Example 6: Low-End Alert (Very High Blink Rate)**
+perclos: 3.82% | blink_rate: 36.0/min | blink_duration_mean: 0.087s | blink_duration_max: 0.880s | sdlp: 0.18m
+```json
+{{"drowsiness_level": 1, "reasoning": "Blink mean 0.087s is well below alert threshold despite high blink rate. Short individual blinks indicate focused attention. PERCLOS 3.82% and low SDLP 0.18m confirm alert state."}}
+```
+
+**Example 7: Moderate-Low Borderline**
+perclos: 5.25% | blink_rate: 23.0/min | blink_duration_mean: 0.109s | blink_duration_max: 0.574s | sdlp: 0.26m
+```json
+{{"drowsiness_level": 2, "reasoning": "Blink mean 0.109s is at the alert-fatigue boundary. PERCLOS 5.25% and blink_max 0.574s suggest early fatigue onset. Classify as moderate to be cautious."}}
+```
+
+**Example 8: High-Range Moderate Drowsiness**
+perclos: 9.44% | blink_rate: 28.0/min | blink_duration_mean: 0.221s | blink_duration_max: 1.400s | sdlp: 0.16m
+```json
+{{"drowsiness_level": 2, "reasoning": "Blink mean 0.221s indicates fatigue, with max blink 1.400s showing occasional prolonged closures. PERCLOS 9.44% is elevated. Despite lower SDLP, blink metrics clearly show moderate impairment."}}
+```
+
+**Example 9: Severe High Drowsiness (High Lane Drift)**
+perclos: 8.61% | blink_rate: 26.0/min | blink_duration_mean: 0.199s | blink_duration_max: 1.266s | sdlp: 0.22m
+```json
+{{"drowsiness_level": 3, "reasoning": "Although blink mean 0.199s is moderate, combined with PERCLOS 8.61%, blink_max 1.266s, and elevated steering entropy, this indicates progression to severe drowsiness. Escalate to class 3."}}
+```
+
+**Example 10: Extreme Low Drowsiness (Minimal Activity)**
+perclos: 0.47% | blink_rate: 5.0/min | blink_duration_mean: 0.056s | blink_duration_max: 0.106s | sdlp: 0.11m
+```json
+{{"drowsiness_level": 1, "reasoning": "Minimal blink activity (0.056s mean, 5/min rate) with extremely low PERCLOS 0.47% and SDLP 0.11m. Clear signs of maximum alertness and stable lane control."}}
+```
 
 ---
 
-### **New Input**
-Provide reasoning and classification in the specified JSON format.
+### New Input
 
-**{is_calibration}**
 <window_id>{window_id}</window_id>
 <vision_features>
-perclos: {perclos:.2f} (%)
-blink_rate: {blink_rate:.1f} (per min)
-blink_duration_mean: {blink_duration_mean:.3f} (s)
-blink_duration_max: {blink_duration_max:.3f} (s)
-yawning_rate: {yawning_rate:.1f} (per min)
+perclos: {perclos:.2f}% | blink_rate: {blink_rate:.1f}/min | blink_duration_mean: {blink_duration_mean:.3f}s | blink_duration_max: {blink_duration_max:.3f}s | yawning_rate: {yawning_rate:.1f}/min
 </vision_features>
-<lane_features>
-sdlp: {sdlp:.2f} (m)
-</lane_features>
-<steering_features>
-steering_entropy: {steering_entropy:.2f}
-steering_reversal_rate: {steering_reversal_rate:.2f} (per sec)
-</steering_features>
+<lane_features>sdlp: {sdlp:.2f}m</lane_features>
+<steering_features>steering_entropy: {steering_entropy:.2f} | steering_reversal_rate: {steering_reversal_rate:.2f}/sec</steering_features>
+<heart_rate_features>hrv_rmssd: {hrv_rmssd:.2f}ms | hrv_sd1: {hrv_sd1:.2f}ms</heart_rate_features>
 
----
-
-**Output JSON Format (strict):**
-```json
-{{{{
-  "drowsiness_level": X,
-  "reasoning": "Brief WSS-grounded reasoning referencing baseline comparison and key features."
-}}}}
-```
+Output JSON only:
 """

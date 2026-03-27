@@ -27,6 +27,14 @@ dependencies = [
     "xgboost>=3.2.0",
     "opencv-python>=4.13.0.92",
     "ipywidgets>=8.1.8",
+    "torch>=2.1.0",
+    "transformers>=4.43.0",
+    "datasets>=2.19.0",
+    "trl>=0.9.0",
+    "peft>=0.11.0",
+    "bitsandbytes>=0.43.0",
+    "accelerate>=0.30.0",
+    "unsloth>=2026.3.10",
 ]
 
 [build-system]

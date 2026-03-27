@@ -22,3 +22,5 @@ mlruns/
 .env
 *.env
 *.log
+*.csv
+*.png

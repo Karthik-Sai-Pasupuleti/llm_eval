@@ -1,0 +1,197 @@
+
+==========================================================================================
+COMPLETE DATA ANALYSIS REPORT - DROWSINESS DETECTION METRICS
+==========================================================================================
+
+[1] DATASET LOADING AND PREPROCESSING
+------------------------------------------------------------------------------------------
+Original CSV dimensions:          431 rows × 16 columns
+Rows after removing NaN values:  425 rows
+Rows removed for quality:        6 rows
+Number of features analyzed:     11
+
+Features used for analysis:
+   1. metric_PERCLOS
+   2. metric_BlinkRate
+   3. blink_duration_mean
+   4. blink_duration_std
+   5. blink_duration_max
+   6. metric_YawnRate
+   7. metric_Entropy
+   8. metric_SteeringRate
+   9. metric_SDLP
+  10. HRV_RMSSD
+  11. HRV_SD1
+
+[2] DROWSINESS LEVEL DISTRIBUTION
+------------------------------------------------------------------------------------------
+  Low       : 213 samples ( 50.1%) █████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░
+  Moderate  : 157 samples ( 36.9%) ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  High      :  55 samples ( 12.9%) ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+
+[3] FEATURE STANDARDIZATION (StandardScaler)
+------------------------------------------------------------------------------------------
+All 11 features standardized to mean=0, std=1
+Ensures equal weighting in PCA and KMeans algorithms
+
+[4] PRINCIPAL COMPONENT ANALYSIS (PCA)
+------------------------------------------------------------------------------------------
+Method: PCA with 2 components
+Variance explained by PC1: 37.05%
+Variance explained by PC2: 20.47%
+Total variance (2 components): 57.52%
+
+Top features contributing to PC1 (eye metrics):
+  - metric_PERCLOS, metric_BlinkRate, blink_duration metrics dominate
+
+Top features contributing to PC2 (heart rate variability):
+  - HRV_RMSSD and HRV_SD1 are primary contributors
+
+[5] KMEANS CLUSTERING (K=3)
+------------------------------------------------------------------------------------------
+Algorithm: KMeans with k=3 clusters
+Initialization: n_init=10, random_state=42
+
+Cluster sizes:
+  Cluster 0:   9 samples (  2.1%) ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  Cluster 1: 392 samples ( 92.2%) ██████████████████████████████░░░░░░░░░░░░░░░░░░░░
+  Cluster 2:  24 samples (  5.6%) █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+
+[6] CROSSTAB: CLUSTERS vs DROWSINESS LEVELS
+------------------------------------------------------------------------------------------
+
+col_0  High  Low  Moderate
+row_0                     
+0         0    2         7
+1        39  208       145
+2        16    3         5
+
+[7] DETAILED CLUSTER ANALYSIS
+------------------------------------------------------------------------------------------
+
+CLUSTER 0 (Small):
+  Size: 9 samples (2.1%)
+  Drowsiness distribution:
+    Moderate  :  7 ( 77.8%)
+    Low       :  2 ( 22.2%)
+  Dominant drowsiness: Moderate
+  Key metric statistics:
+    metric_PERCLOS      : μ=    4.60, σ=    3.38, min=    0.81, max=   11.93
+    metric_BlinkRate    : μ=   22.56, σ=    9.29, min=    9.00, max=   41.00
+    HRV_RMSSD           : μ=17942.22, σ=10629.21, min= 9623.35, max=38274.97
+
+CLUSTER 1 (Main):
+  Size: 392 samples (92.2%)
+  Drowsiness distribution:
+    Low       : 208 ( 53.1%)
+    Moderate  : 145 ( 37.0%)
+    High      : 39 (  9.9%)
+  Dominant drowsiness: Low
+  Key metric statistics:
+    metric_PERCLOS      : μ=    4.75, σ=    4.32, min=    0.11, max=   25.67
+    metric_BlinkRate    : μ=   24.13, σ=   16.73, min=    2.00, max=   85.96
+    HRV_RMSSD           : μ=  601.07, σ=  909.93, min=   40.62, max= 7948.95
+
+CLUSTER 2 (High Drowsiness):
+  Size: 24 samples (5.6%)
+  Drowsiness distribution:
+    High      : 16 ( 66.7%)
+    Moderate  :  5 ( 20.8%)
+    Low       :  3 ( 12.5%)
+  Dominant drowsiness: High
+  Key metric statistics:
+    metric_PERCLOS      : μ=   27.55, σ=    9.39, min=   12.77, max=   45.89
+    metric_BlinkRate    : μ=   37.00, σ=   34.44, min=   13.00, max=  165.39
+    HRV_RMSSD           : μ=  724.48, σ= 1426.41, min=   29.47, max= 6646.93
+
+[8] CLUSTER-DROWSINESS ALIGNMENT METRICS
+------------------------------------------------------------------------------------------
+
+Adjusted Rand Index (ARI):      0.0724
+  → Measures agreement between clusters and true labels
+  → Range: [-1, 1], 1 = perfect agreement, 0 = random partitioning
+  → Interpretation: Weak agreement, clusters don't directly reflect drowsiness
+
+Homogeneity Score:              0.0591
+  → Measure: Each cluster contains samples of single drowsiness level
+  → Range: [0, 1], 1 = perfect homogeneity
+  → Result: Very low (0.0591) - clusters are heterogeneous
+
+Completeness Score:             0.1817
+  → Measure: All samples of a drowsiness level in single cluster
+  → Range: [0, 1], 1 = perfect completeness
+  → Result: Low (0.1817) - classes scattered across clusters
+
+V-Measure Score:                0.0892
+  → Harmonic mean of homogeneity and completeness
+  → Range: [0, 1], 1 = perfect clustering
+  → Result: Low (0.0892) - weak cluster-class correspondence
+
+[9] KEY INSIGHTS AND FINDINGS
+------------------------------------------------------------------------------------------
+
+1. CLUSTERING STRUCTURE:
+   • Highly imbalanced clusters with one dominant group (92.2%)
+   • Small outlier clusters at extremes of feature space
+   • Suggests data has continuous physiological responses, not discrete clusters
+
+2. CLUSTER-DROWSINESS RELATIONSHIP:
+   • Weak alignment indicates drowsiness is multi-dimensional
+   • Cluster 2 shows strongest drowsiness signal (66.7% High)
+   • Cluster 1 is mixed - diverse physiological responses in 'normal' state
+   • No pure drowsiness-specific cluster emerges
+
+3. PHYSIOLOGICAL MARKERS BY CLUSTER:
+   • Cluster 0 (Moderate): Normal eye metrics but abnormally high HRV
+   • Cluster 1 (Low): Normal eye and heart metrics - typical awake state
+   • Cluster 2 (High): Elevated PERCLOS and BlinkRate - drowsiness indicators
+
+4. FEATURE IMPORTANCE (from PCA):
+   • PC1 (37.05%): Driven by eye-based metrics (PERCLOS, BlinkRate)
+   • PC2 (20.47%): Driven by HRV metrics (heart rate variability)
+   • 42.5% variance unexplained - indicates multi-feature complexity
+
+5. DATA QUALITY AND COMPLETENESS:
+   • Original: 431 samples
+   • Clean: 425 samples (98.6% retention)
+   • Missing: 6 rows with HRV values
+   • All features successfully standardized
+
+[10] VISUALIZATION FILES GENERATED
+------------------------------------------------------------------------------------------
+Saved to: /home/karthik/Desktop/llm_eval/cluster_analysis_plots/
+
+  1. 01_pca_by_clusters.png
+     → 2D PCA scatter plot colored by cluster assignments
+
+  2. 02_pca_by_drowsiness.png
+     → 2D PCA scatter plot colored by actual drowsiness levels
+
+  3. 03_cluster_composition.png
+     → Stacked bar chart of drowsiness distribution per cluster
+
+  4. 04_metrics_boxplots.png
+     → Boxplots of PERCLOS, BlinkRate, HRV_RMSSD per cluster
+
+  5. 05_pca_loadings.png
+     → Feature contributions to PC1 and PC2
+
+  6. 06_metric_correlations.png
+     → Heatmap showing correlations between all metrics
+
+  7. 07_feature_relationships.png
+     → 2D scatter plots of key feature pairs colored by cluster
+
+[11] RECOMMENDATIONS
+------------------------------------------------------------------------------------------
+
+• Consider non-linear clustering (DBSCAN, Hierarchical) for better separation
+• Drowsiness appears to be gradual rather than categorical
+• Cluster 2 shows promise as drowsiness detection (PERCLOS > 27 is indicator)
+• HRV alone insufficient - eye metrics are primary drowsiness markers
+• Consider temporal analysis (sequential patterns over time)
+• Investigate why Cluster 0 has anomalously high HRV values
+
+==========================================================================================
+END OF ANALYSIS REPORT
+==========================================================================================

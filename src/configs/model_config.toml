@@ -26,18 +26,18 @@ model_id = "qwen2.5:14b"
 temperature = 0.1
 
 
-# [[models]]
-# name = "DeepSeek-R1-8B"   
-# provider = "ollama"
-# model_id = "deepseek-r1:8b"
-# temperature = 0.1
+[[models]]
+name = "DeepSeek-R1-8B"   
+provider = "ollama"
+model_id = "deepseek-r1:8b"
+temperature = 0.1
 
 
-# [[models]]
-# name = "DeepSeek-R1-14B"   
-# provider = "ollama"
-# model_id = "deepseek-r1:14b"
-# temperature = 0.1
+[[models]]
+name = "DeepSeek-R1-14B"   
+provider = "ollama"
+model_id = "deepseek-r1:14b"
+temperature = 0.1
 
 [[models]]
 name = "phi4-mini_3_8B"   

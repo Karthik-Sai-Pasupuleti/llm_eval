@@ -39,13 +39,8 @@ class Bot:
         sdlp: Optional[StrictFloat] = Field(None, description="Standard deviation of lane position (m).")
         steering_entropy: Optional[StrictFloat] = Field(None, description="Unpredictability measure of steering movements.")
         steering_reversal_rate: Optional[StrictFloat] = Field(None, description="Steering direction changes per minute.")
-        bpm: Optional[StrictFloat] = Field(None)
-        hrv_sdnn: Optional[StrictFloat] = Field(None)
-        hrv_rmssd: Optional[StrictFloat] = Field(None)
-        hrv_sd1: Optional[StrictFloat] = Field(None)
-        hrv_hf: Optional[StrictFloat] = Field(None)
-        hrv_wavelet_entropy: Optional[StrictFloat] = Field(None)
-        hrv_lfhf: Optional[StrictFloat] = Field(None)
+        hrv_rmssd: Optional[StrictFloat] = Field(None, description="HRV RMSSD (Root Mean Square of Successive Differences in ms).")
+        hrv_sd1: Optional[StrictFloat] = Field(None, description="HRV SD1 (Poincaré plot SD1 in ms).")
 
     # Define JSON schema for structured output
     output_schema = {
@@ -171,13 +166,6 @@ if __name__ == "__main__":
             sdlp=0.2,
             steering_entropy=0.1,
             steering_reversal_rate=0.5,
-            bpm = 70,
-            hrv_sdnn = 50,
-            hrv_rmssd = 10,
-            hrv_sd1 = 5,
-            hrv_hf = 2,
-            hrv_wavelet_entropy = 0.5,
-            hrv_lfhf = 0.8
         )
 
         # Run inference multiple times to test history
